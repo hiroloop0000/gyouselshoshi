@@ -24,7 +24,7 @@
   "vars": {
     "ENVIRONMENT": "production",
     "AI_MODEL": "@cf/qwen/qwen3-30b-a3b-fp8",
-    "TURNSTILE_SITE_KEY": "1x00000000000000000000AA"
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAEUSZ7z6ugyEFPtm"
   },
   "observability": {
     "enabled": true,
