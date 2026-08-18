@@ -498,18 +498,28 @@ app.get("/api/questions/next", async (c) => {
   const preview = user.role === "ADMIN" && c.req.query("preview") === "true";
   const question = await c.env.DB
     .prepare(
-      `SELECT q.id, q.stem, q.question_type, q.difficulty, q.status, q.correct_explanation, q.reveal_hint,
+      `WITH answer_history AS (
+         SELECT question_id, MAX(answered_at) AS last_answered_at
+         FROM user_answers
+         WHERE user_id = ?
+         GROUP BY question_id
+       )
+       SELECT q.id, q.stem, q.question_type, q.difficulty, q.status, q.correct_explanation, q.reveal_hint,
        q.judgment_point, t.name AS topic_name, s.name AS subject_name
        FROM questions q JOIN learning_objectives lo ON lo.id = q.learning_objective_id
        JOIN topics t ON t.id = lo.topic_id JOIN subjects s ON s.id = t.subject_id
+       LEFT JOIN answer_history ah ON ah.question_id = q.id
        LEFT JOIN review_schedule rs ON rs.question_id = q.id AND rs.user_id = ?
-       WHERE (q.status = 'VERIFIED' OR ? = 1)
+       WHERE (q.status IN ('VERIFIED', 'REVIEWED') OR ? = 1)
        ORDER BY CASE WHEN rs.status = 'DUE' AND rs.due_at <= CURRENT_TIMESTAMP THEN 0 ELSE 1 END,
-       COALESCE(rs.review_priority, q.importance) DESC, q.created_at LIMIT 1`,
+       CASE WHEN ah.question_id IS NULL THEN 0 ELSE 1 END,
+       COALESCE(rs.review_priority, q.importance) DESC,
+       ah.last_answered_at ASC,
+       q.created_at LIMIT 1`,
     )
-    .bind(user.id, preview ? 1 : 0)
+    .bind(user.id, user.id, preview ? 1 : 0)
     .first<QuestionRow>();
-  if (!question) return c.json({ error: "VERIFIED教材を準備中です。管理画面でレビュー状況を確認してください。", code: "CONTENT_NOT_READY" }, 404);
+  if (!question) return c.json({ error: "練習問題を準備中です。管理画面で教材のレビュー状況を確認してください。", code: "CONTENT_NOT_READY" }, 404);
   const choices = await c.env.DB
     .prepare("SELECT id, body, choice_order FROM question_choices WHERE question_id = ? ORDER BY choice_order")
     .bind(question.id)
@@ -595,7 +605,9 @@ app.post("/api/answers", async (c) => {
     correct,
     contentStatus: question.status,
     includedInReadiness: question.status === "VERIFIED",
-    explanation: selected?.explanation ?? question.correct_explanation,
+    explanation: correct
+      ? selected?.explanation ?? question.correct_explanation
+      : `${selected?.explanation ?? ""} ${question.correct_explanation}`.trim(),
     reveal: question.reveal_hint,
     judgmentPoint: question.judgment_point,
     errorDna: errorCodes,
