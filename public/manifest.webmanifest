@@ -1,0 +1,13 @@
+{
+  "name": "行書PASS - 行政書士AI学習",
+  "short_name": "行書PASS",
+  "description": "誤答を、本番で使える知識へ変える行政書士学習システム",
+  "lang": "ja",
+  "start_url": "/app",
+  "display": "standalone",
+  "background_color": "#f4f1e9",
+  "theme_color": "#112b2a",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
