@@ -30,6 +30,13 @@ export default tseslint.config(
     },
   },
   {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      ecmaVersion: 2024,
+      globals: { ...globals.node, fetch: "readonly", URLSearchParams: "readonly" },
+    },
+  },
+  {
     files: ["**/*.test.ts", "tests/**/*.ts"],
     rules: {
       "@typescript-eslint/no-unsafe-assignment": "off",
