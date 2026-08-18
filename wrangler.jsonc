@@ -14,7 +14,7 @@
     {
       "binding": "DB",
       "database_name": "gyosei-pass-db",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "dd7f1597-9c1e-4ea4-8253-1c8eb3fee8c0",
       "migrations_dir": "./migrations"
     }
   ],
