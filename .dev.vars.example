@@ -1,0 +1,3 @@
+# ローカル開発専用。実値を入れた .dev.vars はコミットしないでください。
+# 本番では `wrangler secret put TURNSTILE_SECRET_KEY` を使用します。
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA

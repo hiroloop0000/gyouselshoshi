@@ -1,0 +1,52 @@
+{
+  "name": "gyosei-pass",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:worker": "wrangler dev",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "cf:types": "wrangler types",
+    "db:migrate:local": "wrangler d1 migrations apply gyosei-pass-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply gyosei-pass-db --remote",
+    "deploy:dry": "npm run build && wrangler deploy --dry-run",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "latest",
+    "hono": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-router-dom": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "latest",
+    "@cloudflare/workers-types": "latest",
+    "@eslint/js": "latest",
+    "@playwright/test": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "latest",
+    "eslint": "latest",
+    "eslint-plugin-react-hooks": "latest",
+    "eslint-plugin-react-refresh": "latest",
+    "globals": "latest",
+    "typescript": "latest",
+    "typescript-eslint": "latest",
+    "vite": "latest",
+    "vitest": "latest",
+    "wrangler": "latest"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
