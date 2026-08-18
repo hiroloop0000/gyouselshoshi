@@ -1,3 +1,4 @@
+import QRCode from "qrcode";
 import {
   Activity,
   AlertTriangle,
@@ -11,6 +12,7 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
+  Copy,
   FilePenLine,
   Flame,
   Gauge,
@@ -22,8 +24,10 @@ import {
   LogOut,
   Menu,
   MessageSquareText,
+  QrCode,
   RefreshCw,
   Settings,
+  Share2,
   ShieldCheck,
   Sparkles,
   Target,
@@ -70,6 +74,34 @@ interface DashboardData {
   content: Record<string, number>;
 }
 
+type RegistrationMode = "OPEN" | "INVITE_ONLY";
+
+interface PublicConfig {
+  turnstileSiteKey: string;
+  registrationMode: RegistrationMode;
+  invitationRequired: boolean;
+}
+
+const defaultPublicConfig: PublicConfig = {
+  turnstileSiteKey: "1x00000000000000000000AA",
+  registrationMode: "OPEN",
+  invitationRequired: false,
+};
+
+function usePublicConfig(): PublicConfig {
+  const [config, setConfig] = useState(defaultPublicConfig);
+  useEffect(() => {
+    api<PublicConfig>("/api/public/config")
+      .then((result) => setConfig({
+        turnstileSiteKey: result.turnstileSiteKey,
+        registrationMode: result.registrationMode === "INVITE_ONLY" ? "INVITE_ONLY" : "OPEN",
+        invitationRequired: result.registrationMode === "INVITE_ONLY",
+      }))
+      .catch(() => undefined);
+  }, []);
+  return config;
+}
+
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 function useAuth(): AuthContextValue {
@@ -109,6 +141,7 @@ function Brand({ compact = false }: { compact?: boolean }) {
 }
 
 function LandingPage() {
+  const { invitationRequired } = usePublicConfig();
   return (
     <div className="landing">
       <header className="landing-header">
@@ -116,7 +149,7 @@ function LandingPage() {
         <nav aria-label="メインナビゲーション">
           <a href="#method">学習メソッド</a>
           <a href="#trust">安心設計</a>
-          <Link className="button button-small button-dark" to="/login">招待コードで始める <ArrowRight size={16} /></Link>
+          <Link className="button button-small button-dark" to="/login?mode=register">{invitationRequired ? "招待コードで始める" : "新規登録"} <ArrowRight size={16} /></Link>
         </nav>
       </header>
       <main id="main">
@@ -126,12 +159,12 @@ function LandingPage() {
             <h1>間違いを、<br /><em>合格できる知識</em>に。</h1>
             <p className="hero-lead">問題を解いて終わりにしない。あなたの誤答原因を見抜き、忘れる前に形を変えて再出題。今日やるべき学習まで、迷わず提示します。</p>
             <div className="hero-actions">
-              <Link className="button button-primary" to="/login?mode=register">招待コードで学習を始める <ArrowRight size={18} /></Link>
+              <Link className="button button-primary" to="/login?mode=register">{invitationRequired ? "招待コードで学習を始める" : "学習を始める"} <ArrowRight size={18} /></Link>
               <a className="button button-ghost" href="#method">仕組みを見る</a>
             </div>
             <div className="trust-row">
               <span><ShieldCheck size={17} /> 公式情報を基準</span>
-              <span><LockKeyhole size={17} /> 招待制・安全な認証</span>
+              <span><LockKeyhole size={17} /> {invitationRequired ? "招待制・安全な認証" : "Turnstile・安全な認証"}</span>
               <span><BrainCircuit size={17} /> AI停止時も学習継続</span>
             </div>
           </div>
@@ -212,12 +245,73 @@ function LandingPage() {
         </section>
 
         <section className="cta-section">
-          <div><p className="eyebrow light">PRIVATE BETA · FIRST 100 LEARNERS</p><h2>今日の一歩を、合格につながる一歩へ。</h2><p>初期版は招待制です。お手元の招待コードから登録してください。</p></div>
+          <div><p className="eyebrow light">{invitationRequired ? "PRIVATE BETA" : "OPEN BETA"} · FIRST 100 LEARNERS</p><h2>今日の一歩を、合格につながる一歩へ。</h2><p>{invitationRequired ? "お手元の招待コードから登録してください。" : "招待コードなしで、メールアドレスから登録できます。"}</p></div>
           <Link className="button button-light" to="/login?mode=register">学習を始める <ArrowRight size={18} /></Link>
         </section>
+        <ShareSection />
       </main>
       <footer><Brand /><p>© 2026 行書PASS</p><p>「合格到達度」は学習実績の指標であり、合格確率ではありません。</p></footer>
     </div>
+  );
+}
+
+async function copyText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.append(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) throw new Error("COPY_FAILED");
+}
+
+function ShareSection() {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [showQr, setShowQr] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [qrError, setQrError] = useState(false);
+  const shareUrl = new URL("/", window.location.origin).toString();
+  useEffect(() => {
+    if (!showQr) return;
+    let active = true;
+    QRCode.toDataURL(shareUrl, { width: 240, margin: 2, errorCorrectionLevel: "M", color: { dark: "#132d2c", light: "#fffefb" } })
+      .then((value) => { if (active) setQrDataUrl(value); })
+      .catch(() => { if (active) setQrError(true); });
+    return () => { active = false; };
+  }, [shareUrl, showQr]);
+  const copyLink = async () => {
+    try {
+      await copyText(shareUrl);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+  };
+  const toggleQr = () => {
+    if (!showQr) {
+      setQrDataUrl("");
+      setQrError(false);
+    }
+    setShowQr((visible) => !visible);
+  };
+  return (
+    <section className="share-section" aria-labelledby="share-title">
+      <div className="share-heading"><span><Share2 /></span><div><p className="eyebrow">SHARE</p><h2 id="share-title">この学習アプリをシェア</h2><p>リンクを送るか、スマートフォンでQRコードを読み取れます。</p></div></div>
+      <div className="share-controls">
+        <div className="share-buttons">
+          <button className="button button-ghost" type="button" onClick={() => void copyLink()}><Copy size={17} />リンクをコピー</button>
+          <button className="button button-ghost" type="button" aria-expanded={showQr} onClick={toggleQr}><QrCode size={18} />{showQr ? "QRコードを閉じる" : "QRコードを表示"}</button>
+        </div>
+        {copyState !== "idle" && <p className={copyState === "copied" ? "share-status success" : "share-status error"} role="status">{copyState === "copied" ? "リンクをコピーしました。" : "コピーできませんでした。URLを長押ししてコピーしてください。"}</p>}
+        {showQr && <div className="share-qr-panel"><strong>スマートフォンで読み取る</strong>{qrDataUrl ? <img src={qrDataUrl} alt="行書PASS共有用QRコード" width="240" height="240" /> : qrError ? <p role="alert">QRコードを生成できませんでした。</p> : <span className="spinner" aria-label="QRコードを生成中" />}<code>{shareUrl}</code></div>}
+      </div>
+    </section>
   );
 }
 
@@ -262,16 +356,15 @@ function AuthPage() {
   const [password, setPassword] = useState("");
   const [invitationCode, setInvitationCode] = useState("");
   const [turnstileToken, setTurnstileToken] = useState("");
-  const [siteKey, setSiteKey] = useState("1x00000000000000000000AA");
+  const { turnstileSiteKey: siteKey, invitationRequired } = usePublicConfig();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => { api<{ turnstileSiteKey: string }>("/api/public/config").then((result) => setSiteKey(result.turnstileSiteKey)).catch(() => undefined); }, []);
   const tokenCallback = useCallback((token: string) => setTurnstileToken(token), []);
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setError(""); setBusy(true);
     try {
       const path = mode === "login" ? "/api/auth/login" : "/api/auth/register";
-      const result = await api<{ user: User }>(path, { method: "POST", body: JSON.stringify({ email, password, turnstileToken, ...(mode === "register" ? { invitationCode } : {}) }) });
+      const result = await api<{ user: User }>(path, { method: "POST", body: JSON.stringify({ email, password, turnstileToken, ...(mode === "register" && invitationRequired ? { invitationCode } : {}) }) });
       setUser(result.user);
       void navigate(result.user.onboardingCompleted ? "/app" : "/onboarding");
     } catch (cause) {
@@ -286,13 +379,13 @@ function AuthPage() {
         <div className="auth-mobile-brand"><Link to="/"><Brand /></Link></div>
         <form className="auth-form" onSubmit={(event) => void submit(event)}>
           <div className="auth-tabs" role="tablist"><button type="button" className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>ログイン</button><button type="button" className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>新規登録</button></div>
-          <div className="auth-title"><h2>{mode === "login" ? "おかえりなさい" : "学習を始めましょう"}</h2><p>{mode === "login" ? "続きのミッションから再開できます。" : "現在は招待コードをお持ちの方のみ登録できます。"}</p></div>
+          <div className="auth-title"><h2>{mode === "login" ? "おかえりなさい" : "学習を始めましょう"}</h2><p>{mode === "login" ? "続きのミッションから再開できます。" : invitationRequired ? "招待コードをお持ちの方が登録できます。" : "招待コードなしで、すぐに登録できます。"}</p></div>
           {error && <div className="form-error" role="alert"><AlertTriangle size={18} />{error}</div>}
           <label>メールアドレス<input autoComplete="email" inputMode="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" required /></label>
           <label>パスワード<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={12} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="12文字以上" required /></label>
-          {mode === "register" && <label>招待コード<input autoComplete="off" value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} placeholder="GYO-XXXXXXXXXXXX" required /></label>}
+          {mode === "register" && invitationRequired && <label>招待コード<input autoComplete="off" value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} placeholder="GYO-XXXXXXXXXXXX" required /></label>}
           <TurnstileWidget siteKey={siteKey} onToken={tokenCallback} />
-          <button className="button button-primary full" disabled={busy || !turnstileToken}>{busy ? "処理中…" : mode === "login" ? "ログイン" : "招待コードで登録"}<ArrowRight size={18} /></button>
+          <button className="button button-primary full" disabled={busy || !turnstileToken}>{busy ? "処理中…" : mode === "login" ? "ログイン" : invitationRequired ? "招待コードで登録" : "新規登録"}<ArrowRight size={18} /></button>
           <p className="auth-note"><LockKeyhole size={15} /> パスワードは強固な鍵導出で保護され、平文では保存されません。</p>
         </form>
       </section>

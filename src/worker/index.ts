@@ -9,6 +9,7 @@ import {
   classifyErrorDna,
   nextReviewIntervalDays,
 } from "../shared/learning";
+import { invitationRequiredFor, normalizeRegistrationMode } from "../shared/registration";
 import { answerAiQuestion } from "./ai";
 import { csrfCookie, expiredCsrfCookie } from "./cookies";
 import {
@@ -35,7 +36,7 @@ const credentialsSchema = z.object({
 });
 
 const registerSchema = credentialsSchema.extend({
-  invitationCode: z.string().trim().min(8).max(128),
+  invitationCode: z.string().trim().min(8).max(128).optional(),
 });
 
 const onboardingSchema = z.object({
@@ -166,10 +167,16 @@ app.get("/api/health", (c) => c.json({ ok: true, service: "gyosei-pass", timesta
 app.get("/api/public/config", async (c) => {
   const exam = await c.env.DB.prepare("SELECT * FROM exam_settings ORDER BY exam_year DESC LIMIT 1").first<ExamRow>();
   if (!exam) return c.json({ error: "試験設定が未登録です。" }, 503);
-  const scoring = await c.env.DB
-    .prepare("SELECT category, threshold_ratio, max_points, official_status FROM exam_scoring_rules WHERE exam_year = ?")
-    .bind(exam.exam_year)
-    .all<{ category: string; threshold_ratio: number; max_points: number | null; official_status: string }>();
+  const [scoring, registrationSetting] = await Promise.all([
+    c.env.DB
+      .prepare("SELECT category, threshold_ratio, max_points, official_status FROM exam_scoring_rules WHERE exam_year = ?")
+      .bind(exam.exam_year)
+      .all<{ category: string; threshold_ratio: number; max_points: number | null; official_status: string }>(),
+    c.env.DB
+      .prepare("SELECT setting_value FROM app_settings WHERE setting_key = 'registration_mode'")
+      .first<{ setting_value: string }>(),
+  ]);
+  const registrationMode = normalizeRegistrationMode(registrationSetting?.setting_value);
   return c.json({
     exam: {
       examYear: exam.exam_year,
@@ -187,16 +194,18 @@ app.get("/api/public/config", async (c) => {
       })),
     },
     turnstileSiteKey: c.env.TURNSTILE_SITE_KEY,
+    registrationMode,
+    invitationRequired: invitationRequiredFor(registrationMode),
   });
 });
 
 app.get("/api/auth/bootstrap-status", async (c) => {
-  const count = await c.env.DB.prepare("SELECT COUNT(*) AS count FROM users").first<{ count: number }>();
+  const count = await c.env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'ADMIN'").first<{ count: number }>();
   return c.json({ bootstrapRequired: Number(count?.count ?? 0) === 0 });
 });
 
 app.post("/api/auth/bootstrap", async (c) => {
-  const existing = await c.env.DB.prepare("SELECT COUNT(*) AS count FROM users").first<{ count: number }>();
+  const existing = await c.env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'ADMIN'").first<{ count: number }>();
   if (Number(existing?.count ?? 0) > 0) return c.json({ error: "初期管理者は作成済みです。" }, 409);
   const expected = getOptionalStringBinding(c.env, "BOOTSTRAP_ADMIN_TOKEN");
   const provided = c.req.header("X-Bootstrap-Token") ?? "";
@@ -209,7 +218,7 @@ app.post("/api/auth/bootstrap", async (c) => {
     c.env.DB
       .prepare(
         `INSERT INTO users (id, email, password_hash, password_salt, password_iterations, role)
-         SELECT ?, ?, ?, ?, ?, 'ADMIN' WHERE NOT EXISTS (SELECT 1 FROM users)`,
+         SELECT ?, ?, ?, ?, ?, 'ADMIN' WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN')`,
       )
       .bind(userId, body.data.email, password.hash, password.salt, password.iterations),
     c.env.DB.prepare("INSERT INTO user_profiles (user_id) SELECT ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)").bind(userId, userId),
@@ -221,14 +230,22 @@ app.post("/api/auth/register", async (c) => {
   const rate = await checkRateLimit(c.env.DB, `register:${clientIp(c.req.raw)}`, 5, 900);
   if (!rate.allowed) return c.json({ error: "登録試行が多すぎます。時間をおいて再試行してください。", retryAfter: rate.retryAfter }, 429);
   const parsed = registerSchema.safeParse(await parseJson(c.req.raw));
-  if (!parsed.success) return c.json({ error: "メール、12文字以上のパスワード、招待コードを確認してください。" }, 422);
+  if (!parsed.success) return c.json({ error: "メールアドレスと12文字以上のパスワードを確認してください。" }, 422);
+  const [registrationSetting, maxUsers] = await Promise.all([
+    c.env.DB
+      .prepare("SELECT setting_value FROM app_settings WHERE setting_key = 'registration_mode'")
+      .first<{ setting_value: string }>(),
+    c.env.DB
+      .prepare("SELECT CAST(setting_value AS INTEGER) AS value FROM app_settings WHERE setting_key = 'max_active_users'")
+      .first<{ value: number }>(),
+  ]);
+  const registrationMode = normalizeRegistrationMode(registrationSetting?.setting_value);
+  const invitationRequired = invitationRequiredFor(registrationMode);
+  if (invitationRequired && !parsed.data.invitationCode) return c.json({ error: "招待コードを入力してください。" }, 422);
   if (!(await turnstileOk(c.env, parsed.data.turnstileToken, clientIp(c.req.raw)))) {
     return c.json({ error: "セキュリティ確認に失敗しました。再度お試しください。" }, 403);
   }
-  const codeHash = await sha256(parsed.data.invitationCode.normalize("NFKC").toUpperCase());
-  const maxUsers = await c.env.DB
-    .prepare("SELECT CAST(setting_value AS INTEGER) AS value FROM app_settings WHERE setting_key = 'max_active_users'")
-    .first<{ value: number }>();
+  const codeHash = parsed.data.invitationCode ? await sha256(parsed.data.invitationCode.normalize("NFKC").toUpperCase()) : null;
   const password = await hashPassword(parsed.data.password);
   const userId = crypto.randomUUID();
   try {
@@ -238,22 +255,24 @@ app.post("/api/auth/register", async (c) => {
           `INSERT INTO users (id, email, password_hash, password_salt, password_iterations)
            SELECT ?, ?, ?, ?, ?
            WHERE (SELECT COUNT(*) FROM users WHERE is_active = 1) < ?
-             AND EXISTS (
+             AND (? = 0 OR EXISTS (
                SELECT 1 FROM invitations WHERE code_hash = ? AND is_active = 1
                AND used_count < max_uses AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-             )`,
+             ))`,
         )
-        .bind(userId, parsed.data.email, password.hash, password.salt, password.iterations, Number(maxUsers?.value ?? 100), codeHash),
+        .bind(userId, parsed.data.email, password.hash, password.salt, password.iterations, Number(maxUsers?.value ?? 100), invitationRequired ? 1 : 0, codeHash),
       c.env.DB.prepare("INSERT INTO user_profiles (user_id) SELECT ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)").bind(userId, userId),
       c.env.DB
         .prepare(
           `UPDATE invitations SET used_count = used_count + 1
-           WHERE code_hash = ? AND EXISTS (SELECT 1 FROM users WHERE id = ?)
+           WHERE ? = 1 AND code_hash = ? AND EXISTS (SELECT 1 FROM users WHERE id = ?)
            AND used_count < max_uses`,
         )
-        .bind(codeHash, userId),
+        .bind(invitationRequired ? 1 : 0, codeHash, userId),
     ]);
-    if (Number(results[0]?.meta.changes ?? 0) !== 1) return c.json({ error: "招待コードが無効、期限切れ、または定員に達しています。" }, 409);
+    if (Number(results[0]?.meta.changes ?? 0) !== 1) {
+      return c.json({ error: invitationRequired ? "招待コードが無効、期限切れ、または定員に達しています。" : "現在、新規登録の受付上限に達しています。" }, 409);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     if (message.includes("UNIQUE")) return c.json({ error: "このメールアドレスは登録済みです。" }, 409);
@@ -676,12 +695,17 @@ app.patch("/api/admin/settings/:key", async (c) => {
   const parsed = settingSchema.safeParse(await parseJson(c.req.raw));
   if (!parsed.success) return c.json({ error: "設定値を確認してください。" }, 422);
   const allowed = new Set([
-    "max_active_users", "ai_enabled", "free_ai_questions_per_day", "reverse_lecture_per_day", "writing_ai_review_per_day",
+    "registration_mode", "max_active_users", "ai_enabled", "free_ai_questions_per_day", "reverse_lecture_per_day", "writing_ai_review_per_day",
     "monthly_ai_budget_jpy", "review_weight_importance", "review_weight_forgetting", "review_weight_misunderstanding", "review_weight_confusion", "review_weight_urgency",
   ]);
   const key = c.req.param("key");
   if (!allowed.has(key)) return c.json({ error: "変更できない設定です。" }, 403);
-  const value = typeof parsed.data.value === "object" ? JSON.stringify(parsed.data.value) : String(parsed.data.value);
+  let value = typeof parsed.data.value === "object" ? JSON.stringify(parsed.data.value) : String(parsed.data.value);
+  if (key === "registration_mode") {
+    const requestedMode = typeof parsed.data.value === "string" ? parsed.data.value.trim().toUpperCase() : "";
+    if (requestedMode !== "OPEN" && requestedMode !== "INVITE_ONLY") return c.json({ error: "登録モードはOPENまたはINVITE_ONLYを指定してください。" }, 422);
+    value = requestedMode;
+  }
   const result = await c.env.DB.prepare("UPDATE app_settings SET setting_value = ?, updated_at = CURRENT_TIMESTAMP WHERE setting_key = ?").bind(value, key).run();
   if (Number(result.meta.changes ?? 0) !== 1) return c.json({ error: "設定が見つかりません。" }, 404);
   return c.json({ updated: true, key, value });

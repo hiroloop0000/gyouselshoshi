@@ -6,7 +6,8 @@
 
 ## 主な機能
 
-- 招待制登録、定員管理、USER / ADMIN権限
+- 公開登録（必要に応じて招待制へ切替可能）、定員管理、USER / ADMIN権限
+- ランディングページのURLコピー・QRコード共有
 - PBKDF2-SHA-256＋個別salt、HttpOnly / Secure / SameSite Cookie、CSRF、Turnstile、rate limit
 - 初回オンボーディングと15問診断セッション
 - 今日の合格ミッション、3分で復帰モード
@@ -107,9 +108,9 @@ D1のrows read節約のため、`user_id`、`question_id`、`topic_id`、`due_at
 ## 初期管理者
 
 1. `BOOTSTRAP_ADMIN_TOKEN` をWrangler Secretへ登録
-2. migration適用後、ユーザーが0人のときだけ `/api/auth/bootstrap` を呼ぶ
+2. migration適用後、ADMINが0人のときだけ `/api/auth/bootstrap` を呼ぶ（一般ユーザーが先に登録していても実行可能）
 3. ヘッダー `X-Bootstrap-Token` にSecret、JSON bodyに `email` と12文字以上の `password` を送る
-4. 管理画面で招待コードを発行する
+4. 登録は既定で `OPEN`。招待制へ切り替える場合だけ `registration_mode` を `INVITE_ONLY` に変更し、管理画面で招待コードを発行する
 
 ```bash
 curl -X POST https://YOUR-WORKER.workers.dev/api/auth/bootstrap \
@@ -171,7 +172,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Unitではscoring相当の到達度、復習優先度、習得判定、招待、定員、AI cost guardを検証します。IntegrationではWorkerのhealth/error応答、E2Eではlandingと招待登録導線・keyboard focusを確認します。
+Unitではscoring相当の到達度、復習優先度、習得判定、登録モード、招待、定員、AI cost guardを検証します。IntegrationではWorkerのhealth/error応答、E2Eではlanding、公開登録導線、URLコピー、QR表示、keyboard focusを確認します。
 
 ## Deploy
 
@@ -204,7 +205,7 @@ GitHub Actions deployにはRepository/Environment Secretsを設定します。
 - [ ] `TURNSTILE_SITE_KEY` を公開varへ設定
 - [ ] `TURNSTILE_SECRET_KEY` と `BOOTSTRAP_ADMIN_TOKEN` をSecret登録
 - [ ] 最初のADMINを作成しBootstrap Secretを削除
-- [ ] 招待コードを発行し `max_active_users` を確認
+- [ ] `registration_mode`（既定 `OPEN`）と `max_active_users` を確認。招待制の場合のみ招待コードを発行
 - [ ] VERIFIED教材の件数・論点coverageを確認
 - [ ] typecheck / lint / tests / build / dry-runが成功
 - [ ] Workers Logs/TracesとD1/Workers AI usage監視を確認
