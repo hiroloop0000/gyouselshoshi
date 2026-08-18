@@ -76,6 +76,7 @@ interface UserRow {
   password_hash: string;
   password_salt: string;
   password_iterations: number;
+  password_algorithm: string;
   role: "USER" | "ADMIN";
   exam_year: number;
   onboarding_completed_at: string | null;
@@ -141,6 +142,15 @@ async function requireMutationAuth(request: Request, env: Env) {
   if (!user) return { user: null, csrfValid: false };
   return { user, csrfValid: await verifyCsrf(request, env.DB, user.sessionId) };
 }
+function logPasswordProtectionFailure(stage: "bootstrap" | "register" | "login", error: unknown): void {
+  console.error(JSON.stringify({
+    message: "password_protection_failed",
+    stage,
+    errorName: error instanceof Error ? error.name : "UnknownError",
+    error: error instanceof Error ? error.message : "Unknown error",
+  }));
+}
+
 
 app.use("/api/*", secureHeaders({
   contentSecurityPolicy: {
@@ -212,15 +222,21 @@ app.post("/api/auth/bootstrap", async (c) => {
   if (!expected || !(await constantTimeEqual(provided, expected))) return c.json({ error: "初期設定トークンが無効です。" }, 403);
   const body = credentialsSchema.omit({ turnstileToken: true }).safeParse(await parseJson(c.req.raw));
   if (!body.success) return c.json({ error: "入力内容を確認してください。" }, 422);
-  const password = await hashPassword(body.data.password);
+  let password: Awaited<ReturnType<typeof hashPassword>>;
+  try {
+    password = await hashPassword(body.data.password);
+  } catch (error) {
+    logPasswordProtectionFailure("bootstrap", error);
+    return c.json({ error: "パスワード保護処理を完了できませんでした。時間をおいて再試行してください。", code: "PASSWORD_PROTECTION_FAILED" }, 503);
+  }
   const userId = crypto.randomUUID();
   await c.env.DB.batch([
     c.env.DB
       .prepare(
-        `INSERT INTO users (id, email, password_hash, password_salt, password_iterations, role)
-         SELECT ?, ?, ?, ?, ?, 'ADMIN' WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN')`,
+        `INSERT INTO users (id, email, password_hash, password_salt, password_iterations, password_algorithm, role)
+         SELECT ?, ?, ?, ?, ?, ?, 'ADMIN' WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN')`,
       )
-      .bind(userId, body.data.email, password.hash, password.salt, password.iterations),
+      .bind(userId, body.data.email, password.hash, password.salt, password.iterations, password.algorithm),
     c.env.DB.prepare("INSERT INTO user_profiles (user_id) SELECT ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)").bind(userId, userId),
   ]);
   return c.json({ created: true }, 201);
@@ -246,21 +262,27 @@ app.post("/api/auth/register", async (c) => {
     return c.json({ error: "セキュリティ確認に失敗しました。再度お試しください。" }, 403);
   }
   const codeHash = parsed.data.invitationCode ? await sha256(parsed.data.invitationCode.normalize("NFKC").toUpperCase()) : null;
-  const password = await hashPassword(parsed.data.password);
+  let password: Awaited<ReturnType<typeof hashPassword>>;
+  try {
+    password = await hashPassword(parsed.data.password);
+  } catch (error) {
+    logPasswordProtectionFailure("register", error);
+    return c.json({ error: "パスワード保護処理を完了できませんでした。時間をおいて再試行してください。", code: "PASSWORD_PROTECTION_FAILED" }, 503);
+  }
   const userId = crypto.randomUUID();
   try {
     const results = await c.env.DB.batch([
       c.env.DB
         .prepare(
-          `INSERT INTO users (id, email, password_hash, password_salt, password_iterations)
-           SELECT ?, ?, ?, ?, ?
+          `INSERT INTO users (id, email, password_hash, password_salt, password_iterations, password_algorithm)
+           SELECT ?, ?, ?, ?, ?, ?
            WHERE (SELECT COUNT(*) FROM users WHERE is_active = 1) < ?
              AND (? = 0 OR EXISTS (
                SELECT 1 FROM invitations WHERE code_hash = ? AND is_active = 1
                AND used_count < max_uses AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
              ))`,
         )
-        .bind(userId, parsed.data.email, password.hash, password.salt, password.iterations, Number(maxUsers?.value ?? 100), invitationRequired ? 1 : 0, codeHash),
+        .bind(userId, parsed.data.email, password.hash, password.salt, password.iterations, password.algorithm, Number(maxUsers?.value ?? 100), invitationRequired ? 1 : 0, codeHash),
       c.env.DB.prepare("INSERT INTO user_profiles (user_id) SELECT ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)").bind(userId, userId),
       c.env.DB
         .prepare(
@@ -291,10 +313,17 @@ app.post("/api/auth/login", async (c) => {
   if (!parsed.success) return c.json({ error: "ログイン情報を確認してください。" }, 422);
   if (!(await turnstileOk(c.env, parsed.data.turnstileToken, ip))) return c.json({ error: "セキュリティ確認に失敗しました。" }, 403);
   const row = await c.env.DB
-    .prepare("SELECT id, email, password_hash, password_salt, password_iterations, role, exam_year, onboarding_completed_at FROM users WHERE email = ? AND is_active = 1")
+    .prepare("SELECT id, email, password_hash, password_salt, password_iterations, password_algorithm, role, exam_year, onboarding_completed_at FROM users WHERE email = ? AND is_active = 1")
     .bind(parsed.data.email)
     .first<UserRow>();
-  if (!row || !(await verifyPassword(parsed.data.password, row.password_hash, row.password_salt, row.password_iterations))) {
+  let passwordValid: boolean;
+  try {
+    passwordValid = row ? await verifyPassword(parsed.data.password, row.password_hash, row.password_salt, row.password_iterations, row.password_algorithm) : false;
+  } catch (error) {
+    logPasswordProtectionFailure("login", error);
+    return c.json({ error: "パスワード確認処理を完了できませんでした。時間をおいて再試行してください。", code: "PASSWORD_PROTECTION_FAILED" }, 503);
+  }
+  if (!row || !passwordValid) {
     return c.json({ error: "メールアドレスまたはパスワードが違います。" }, 401);
   }
   const session = await createSession(c.env.DB, row.id);

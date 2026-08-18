@@ -160,6 +160,7 @@ function LandingPage() {
             <p className="hero-lead">問題を解いて終わりにしない。あなたの誤答原因を見抜き、忘れる前に形を変えて再出題。今日やるべき学習まで、迷わず提示します。</p>
             <div className="hero-actions">
               <Link className="button button-primary" to="/login?mode=register">{invitationRequired ? "招待コードで学習を始める" : "学習を始める"} <ArrowRight size={18} /></Link>
+              <Link className="button button-ghost" to="/guest">登録せずゲストで試す</Link>
               <a className="button button-ghost" href="#method">仕組みを見る</a>
             </div>
             <div className="trust-row">
@@ -387,8 +388,68 @@ function AuthPage() {
           <TurnstileWidget siteKey={siteKey} onToken={tokenCallback} />
           <button className="button button-primary full" disabled={busy || !turnstileToken}>{busy ? "処理中…" : mode === "login" ? "ログイン" : invitationRequired ? "招待コードで登録" : "新規登録"}<ArrowRight size={18} /></button>
           <p className="auth-note"><LockKeyhole size={15} /> パスワードは強固な鍵導出で保護され、平文では保存されません。</p>
+          <div className="auth-guest"><span>まずは登録せずに画面を試せます</span><Link className="button button-ghost full" to="/guest">ゲストモードを開く <ArrowRight size={17} /></Link></div>
         </form>
       </section>
+    </main>
+  );
+}
+
+function GuestPage() {
+  const [choice, setChoice] = useState("");
+  const [confidence, setConfidence] = useState<"explain" | "probable" | "guess">("probable");
+  const [submitted, setSubmitted] = useState(false);
+  const correctChoice = "reason";
+  const choices = [
+    { id: "score", label: "A", text: "その日の合否予想だけ" },
+    { id: "reason", label: "B", text: "なぜそう判断したか、という理由と確信度" },
+    { id: "time", label: "C", text: "学習にかかった時間だけ" },
+    { id: "answer", label: "D", text: "正答番号だけ" },
+  ];
+  const resultCorrect = choice === correctChoice;
+  const selectChoice = (id: string) => {
+    setChoice(id);
+    setSubmitted(false);
+  };
+  return (
+    <main id="main" className="guest-page">
+      <header className="guest-header">
+        <Link to="/"><Brand /></Link>
+        <span className="guest-badge"><UserRound size={15} /> ゲストモード</span>
+        <nav aria-label="ゲストメニュー"><Link to="/login">ログイン</Link><Link className="button button-small button-primary" to="/login?mode=register">無料で登録</Link></nav>
+      </header>
+      <section className="guest-hero">
+        <div>
+          <p className="eyebrow"><Sparkles size={15} /> NO SIGN-UP DEMO</p>
+          <h1>登録せずに、<br />学習の流れを体験。</h1>
+          <p>今日のミッションから一問を解き、判断理由と確信度を振り返る流れを試せます。</p>
+          <div className="guest-actions"><a className="button button-primary" href="#guest-demo">デモ問題を解く <ArrowRight size={18} /></a><Link className="button button-ghost" to="/">トップへ戻る</Link></div>
+        </div>
+        <aside className="guest-overview" aria-label="ゲスト体験の内容">
+          <span className="card-kicker">GUEST EXPERIENCE</span>
+          <strong>約3分</strong>
+          <p>登録情報なしで、主要な学習体験を確認できます。</p>
+          <ul><li><CheckCircle2 size={17} /> 今日のミッション</li><li><CheckCircle2 size={17} /> デモ問題と確信度</li><li><CheckCircle2 size={17} /> 回答後の振り返り</li></ul>
+        </aside>
+      </section>
+      <div className="guest-notice" role="note"><ShieldCheck size={21} /><div><strong>保存されない体験モードです</strong><p>メールアドレス・パスワードは不要です。回答や進捗は保存されず、AI先生など一部機能は登録後に利用できます。</p></div></div>
+      <section className="guest-demo-layout" id="guest-demo" aria-label="ゲスト学習デモ">
+        <article className="guest-mission-card">
+          <div className="card-head"><div><span className="card-kicker">TODAY'S MISSION · DEMO</span><h2>今日の合格ミッション</h2><p><Clock3 size={15} /> 約3分</p></div><div className="progress-circle"><div><strong>0</strong><span>/ 1</span></div></div></div>
+          <div className="guest-mission-item"><span>1</span><div><strong>学習ループ体験問題</strong><small>回答 → 確信度 → 振り返り</small></div><em>3分</em></div>
+          <p className="guest-help"><Target size={18} /> ゲストでは操作方法を安全に体験できます。実際の行政書士教材は、品質確認済みのものだけを登録後の学習判定に使います。</p>
+        </article>
+        <article className="guest-question-card">
+          <div className="guest-question-meta"><span>デモ問題</span><em>到達度に未算入</em></div>
+          <h2>同じ誤答を減らすため、回答後にまず残すとよい情報はどれでしょう？</h2>
+          <fieldset><legend className="sr-only">回答を選択</legend>{choices.map((item) => <label key={item.id} className={choice === item.id ? "selected" : ""}><input type="radio" name="guest-answer" value={item.id} checked={choice === item.id} onChange={() => selectChoice(item.id)} /><span>{item.label}</span><strong>{item.text}</strong></label>)}</fieldset>
+          <div className="guest-confidence"><span>確信度</span><div>{[["explain", "説明できる"], ["probable", "たぶん"], ["guess", "勘"]].map(([value, label]) => <button key={value} type="button" className={confidence === value ? "selected" : ""} aria-pressed={confidence === value} onClick={() => setConfidence(value as typeof confidence)}>{label}</button>)}</div></div>
+          <button className="button button-primary full" type="button" disabled={!choice} onClick={() => setSubmitted(true)}>回答を確認 <ArrowRight size={18} /></button>
+          {submitted && <div className={`guest-result ${resultCorrect ? "correct" : "retry"}`} role="status">{resultCorrect ? <CheckCircle2 /> : <RefreshCw />}<div><strong>{resultCorrect ? "正解です。判断理由まで残すのがポイントです。" : "もう一歩です。正答はBです。"}</strong><p>正誤だけでなく、判断理由と確信度を記録すると「知識不足・制度混同・読み違い」など、次に直すべき原因を選べます。</p></div></div>}
+        </article>
+      </section>
+      <section className="guest-cta"><div><p className="eyebrow light">READY TO CONTINUE?</p><h2>進捗を保存して、今日の続きから。</h2><p>登録すると、復習時期・誤答DNA・今日のミッションをあなた専用に組み立てます。</p></div><Link className="button button-light" to="/login?mode=register">無料で登録する <ArrowRight size={18} /></Link></section>
+      <footer className="guest-footer"><Brand /><p>ゲストモードのデータは保存されません。</p></footer>
     </main>
   );
 }
@@ -539,5 +600,5 @@ function EmptyState({ icon, title, text, action }: { icon: ReactNode; title: str
 function PageSkeleton() { return <div className="page-skeleton"><div /><div /><div className="wide" /></div>; }
 
 export default function App() {
-  return <AuthProvider><Routes><Route path="/" element={<LandingPage />} /><Route path="/login" element={<AuthPage />} /><Route path="/onboarding" element={<Protected><OnboardingPage /></Protected>} /><Route path="/app/*" element={<Protected><AppShell /></Protected>} /><Route path="*" element={<Navigate to="/" replace />} /></Routes></AuthProvider>;
+  return <AuthProvider><Routes><Route path="/" element={<LandingPage />} /><Route path="/login" element={<AuthPage />} /><Route path="/guest" element={<GuestPage />} /><Route path="/onboarding" element={<Protected><OnboardingPage /></Protected>} /><Route path="/app/*" element={<Protected><AppShell /></Protected>} /><Route path="*" element={<Navigate to="/" replace />} /></Routes></AuthProvider>;
 }

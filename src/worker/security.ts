@@ -1,5 +1,9 @@
 const encoder = new TextEncoder();
 
+export const PASSWORD_HASH_TOTAL_ITERATIONS = 210_000;
+const PBKDF2_OPERATION_MAX_ITERATIONS = 100_000;
+export const PASSWORD_HASH_ALGORITHM = "PBKDF2_SHA256_SPLIT";
+
 export interface AuthenticatedUser {
   id: string;
   email: string;
@@ -48,18 +52,44 @@ export async function sha256(value: string): Promise<string> {
   return bytesToBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value))));
 }
 
-export async function hashPassword(password: string, salt = randomToken(18), iterations = 210_000): Promise<{
-  hash: string;
-  salt: string;
-  iterations: number;
-}> {
+async function derivePbkdf2(password: string, salt: Uint8Array<ArrayBuffer>, iterations: number): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt: new Uint8Array(base64UrlToBytes(salt)), iterations },
+    { name: "PBKDF2", hash: "SHA-256", salt, iterations },
     key,
     256,
   );
-  return { hash: bytesToBase64Url(new Uint8Array(bits)), salt, iterations };
+  return new Uint8Array(bits);
+}
+
+async function hashLegacyPassword(password: string, salt: string, iterations: number): Promise<string> {
+  return bytesToBase64Url(await derivePbkdf2(password, Uint8Array.from(base64UrlToBytes(salt)), iterations));
+}
+
+export async function hashPassword(password: string, salt = randomToken(18), iterations = PASSWORD_HASH_TOTAL_ITERATIONS): Promise<{
+  hash: string;
+  salt: string;
+  iterations: number;
+  algorithm: typeof PASSWORD_HASH_ALGORITHM;
+}> {
+  if (!Number.isSafeInteger(iterations) || iterations < 1) throw new Error("PASSWORD_ITERATIONS_INVALID");
+  const saltBytes = Uint8Array.from(base64UrlToBytes(salt));
+  const chunks: Uint8Array[] = [];
+  let remaining = iterations;
+  let chunkIndex = 0;
+  while (remaining > 0) {
+    const chunkIterations = Math.min(remaining, PBKDF2_OPERATION_MAX_ITERATIONS);
+    const domainSalt = new Uint8Array(saltBytes.length + 4);
+    domainSalt.set(saltBytes);
+    new DataView(domainSalt.buffer).setUint32(saltBytes.length, chunkIndex, false);
+    chunks.push(await derivePbkdf2(password, domainSalt, chunkIterations));
+    remaining -= chunkIterations;
+    chunkIndex += 1;
+  }
+  const combined = new Uint8Array(chunks.length * 32);
+  chunks.forEach((chunk, index) => combined.set(chunk, index * 32));
+  const finalHash = await crypto.subtle.digest("SHA-256", combined);
+  return { hash: bytesToBase64Url(new Uint8Array(finalHash)), salt, iterations, algorithm: PASSWORD_HASH_ALGORITHM };
 }
 
 export async function constantTimeEqual(left: string, right: string): Promise<boolean> {
@@ -70,12 +100,30 @@ export async function constantTimeEqual(left: string, right: string): Promise<bo
   const subtle = crypto.subtle as SubtleCrypto & {
     timingSafeEqual(a: ArrayBuffer, b: ArrayBuffer): boolean;
   };
-  return subtle.timingSafeEqual(leftHash, rightHash);
+  if (typeof subtle.timingSafeEqual === "function") return subtle.timingSafeEqual(leftHash, rightHash);
+  const leftBytes = new Uint8Array(leftHash);
+  const rightBytes = new Uint8Array(rightHash);
+  if (leftBytes.length !== rightBytes.length) return false;
+  let difference = 0;
+  for (let index = 0; index < leftBytes.length; index += 1) difference |= leftBytes[index]! ^ rightBytes[index]!;
+  return difference === 0;
 }
 
-export async function verifyPassword(password: string, expectedHash: string, salt: string, iterations: number): Promise<boolean> {
-  const actual = await hashPassword(password, salt, iterations);
-  return constantTimeEqual(actual.hash, expectedHash);
+export async function verifyPassword(
+  password: string,
+  expectedHash: string,
+  salt: string,
+  iterations: number,
+  algorithm: string,
+): Promise<boolean> {
+  if (algorithm === PASSWORD_HASH_ALGORITHM) {
+    const actual = await hashPassword(password, salt, iterations);
+    return constantTimeEqual(actual.hash, expectedHash);
+  }
+  if (algorithm === "PBKDF2_SHA256") {
+    return constantTimeEqual(await hashLegacyPassword(password, salt, iterations), expectedHash);
+  }
+  return false;
 }
 
 function parseCookies(header: string | null): Map<string, string> {

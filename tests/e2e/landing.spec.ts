@@ -17,6 +17,18 @@ test("open registration call to action does not require an invitation code", asy
   await expect(page.getByLabel("招待コード")).toHaveCount(0);
 });
 
+test("guest mode works without registration or login", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("link", { name: "登録せずゲストで試す" }).click();
+  await expect(page).toHaveURL(/\/guest$/);
+  await expect(page.getByRole("heading", { name: /登録せずに/ })).toBeVisible();
+  await expect(page.getByText("メールアドレス・パスワードは不要です。")).toBeVisible();
+
+  await page.getByRole("radio", { name: /判断したか/ }).check();
+  await page.getByRole("button", { name: "回答を確認" }).click();
+  await expect(page.getByRole("status")).toContainText("正解です");
+});
+
 test("shares the current URL by clipboard and QR code", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/");

@@ -7,8 +7,9 @@
 ## 主な機能
 
 - 公開登録（必要に応じて招待制へ切替可能）、定員管理、USER / ADMIN権限
+- 登録・ログイン不要で、データを保存せず学習ループを試せるゲストモード
 - ランディングページのURLコピー・QRコード共有
-- PBKDF2-SHA-256＋個別salt、HttpOnly / Secure / SameSite Cookie、CSRF、Turnstile、rate limit
+- Workers互換の分割PBKDF2-SHA-256（総反復回数210,000）＋個別salt、HttpOnly / Secure / SameSite Cookie、CSRF、Turnstile、rate limit
 - 初回オンボーディングと15問診断セッション
 - 今日の合格ミッション、3分で復帰モード
 - 6R誤答変換（Recall / Rate / Reveal / Repair / Reapply / Return）
@@ -172,7 +173,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Unitではscoring相当の到達度、復習優先度、習得判定、登録モード、招待、定員、AI cost guardを検証します。IntegrationではWorkerのhealth/error応答、E2Eではlanding、公開登録導線、URLコピー、QR表示、keyboard focusを確認します。
+Unitではscoring相当の到達度、復習優先度、習得判定、登録モード、パスワード保護、招待、定員、AI cost guardを検証します。IntegrationではWorkerのhealth/error応答、E2Eではlanding、公開登録導線、ゲスト体験、URLコピー、QR表示、keyboard focusを確認します。
 
 ## Deploy
 
