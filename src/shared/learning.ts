@@ -191,6 +191,24 @@ export function buildMission(signals: MissionSignals): { comebackMode: boolean; 
   return { comebackMode, items, estimatedMinutes: used };
 }
 
+export interface QuestionProgress {
+  totalQuestions: number;
+  answeredQuestions: number;
+  remainingQuestions: number;
+  completionRate: number;
+}
+
+export function calculateQuestionProgress(totalQuestions: number, answeredQuestions: number): QuestionProgress {
+  const total = Math.max(0, Math.trunc(totalQuestions));
+  const answered = Math.min(total, Math.max(0, Math.trunc(answeredQuestions)));
+  return {
+    totalQuestions: total,
+    answeredQuestions: answered,
+    remainingQuestions: total - answered,
+    completionRate: total === 0 ? 0 : Math.round((answered / total) * 1000) / 10,
+  };
+}
+
 export function validateInvitationSnapshot(input: {
   active: boolean;
   usedCount: number;

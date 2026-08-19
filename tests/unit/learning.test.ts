@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildMission,
   calculateMastery,
+  calculateQuestionProgress,
   calculateReadiness,
   calculateReviewPriority,
   canActivateUser,
@@ -142,5 +143,16 @@ describe("AI cost guard and mission", () => {
     expect(mission.comebackMode).toBe(true);
     expect(mission.estimatedMinutes).toBeLessThanOrEqual(8);
     expect(mission.items.length).toBeGreaterThan(0);
+  });
+
+  it("reports unique question-bank completion without exceeding the total", () => {
+    expect(calculateQuestionProgress(4010, 123)).toEqual({
+      totalQuestions: 4010,
+      answeredQuestions: 123,
+      remainingQuestions: 3887,
+      completionRate: 3.1,
+    });
+    expect(calculateQuestionProgress(10, 14)).toMatchObject({ answeredQuestions: 10, remainingQuestions: 0, completionRate: 100 });
+    expect(calculateQuestionProgress(0, 0).completionRate).toBe(0);
   });
 });

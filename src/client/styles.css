@@ -216,3 +216,25 @@ button { color: inherit; }
   .landing-header nav { gap: 7px; }.install-nav { min-width: 42px; padding: 0 11px; font-size: 0 !important; }.install-nav svg { width: 18px; height: 18px; }
   .install-banner { padding: 12px; grid-template-columns: 40px 1fr 30px; gap: 10px; }.install-banner > span { width: 40px; height: 40px; }.install-banner .button { grid-column: 1 / -1; min-height: 44px; }.install-banner .install-dismiss { grid-column: 3; grid-row: 1; }.install-guide { padding: 30px 20px 22px; border-radius: 20px; }.install-guide h2 { padding-right: 30px; font-size: 22px; }
 }
+
+/* Question bank progress */
+.question-progress-panel { width: min(820px, 100%); margin: 0 auto 16px; padding: 20px 24px; background: #fff; border: 1px solid var(--line); border-radius: 17px; box-shadow: 0 10px 35px rgba(18,45,44,.06); }
+.question-progress-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
+.question-progress-head .card-kicker { display: block; margin-bottom: 5px; }
+.question-progress-head h2 { margin: 0; font-size: 16px; }
+.question-progress-head > strong { color: var(--teal); font-size: 28px; }
+.question-progress-head > strong small { font-size: 12px; }
+.question-progress-track { height: 9px; margin: 15px 0 9px; overflow: hidden; background: #e9ede8; border-radius: 10px; }
+.question-progress-track i { display: block; min-width: 0; height: 100%; background: linear-gradient(90deg, var(--teal), var(--amber)); border-radius: inherit; transition: width .3s ease; }
+.question-progress-foot { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: 10px; }
+.question-progress-foot a { display: inline-flex; align-items: center; gap: 4px; color: var(--teal); font-weight: 800; text-decoration: none; }
+.filter-progress { margin: 11px 0 0; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+.teacher-completion { margin: 0 0 18px; }
+
+@media (max-width: 560px) {
+  .question-progress-panel { padding: 17px 16px; }
+  .question-progress-head { align-items: flex-start; }
+  .question-progress-head h2 { font-size: 14px; line-height: 1.6; }
+  .question-progress-head > strong { font-size: 23px; }
+  .question-progress-foot { flex-direction: column; gap: 7px; }
+}

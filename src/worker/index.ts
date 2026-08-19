@@ -4,13 +4,14 @@ import { z } from "zod";
 import {
   buildMission,
   calculateMastery,
+  calculateQuestionProgress,
   calculateReadiness,
   calculateReviewPriority,
   classifyErrorDna,
   nextReviewIntervalDays,
   scoreWritingAnswer,
 } from "../shared/learning";
-import type { WritingRubricConfig } from "../shared/learning";
+import type { QuestionProgress, WritingRubricConfig } from "../shared/learning";
 import { invitationRequiredFor, normalizeRegistrationMode } from "../shared/registration";
 import { answerAiQuestion } from "./ai";
 import { csrfCookie, expiredCsrfCookie } from "./cookies";
@@ -474,6 +475,26 @@ async function completeMissionItem(env: Env, userId: string, itemTypes: string[]
   return item.item_type;
 }
 
+async function getQuestionProgress(
+  env: Env,
+  userId: string,
+  options: { includeDraft?: boolean; questionType?: string | null } = {},
+): Promise<QuestionProgress> {
+  const statuses = options.includeDraft ? "('DRAFT', 'REVIEWED', 'VERIFIED')" : "('REVIEWED', 'VERIFIED')";
+  const questionType = options.questionType ?? null;
+  const row = await env.DB
+    .prepare(
+      `SELECT COUNT(q.id) AS total,
+       COALESCE(SUM(CASE WHEN answered.question_id IS NULL THEN 0 ELSE 1 END), 0) AS answered
+       FROM questions q
+       LEFT JOIN (SELECT DISTINCT question_id FROM user_answers WHERE user_id = ?) answered ON answered.question_id = q.id
+       WHERE q.status IN ${statuses} AND (? IS NULL OR q.question_type = ?)`,
+    )
+    .bind(userId, questionType, questionType)
+    .first<{ total: number; answered: number }>();
+  return calculateQuestionProgress(Number(row?.total ?? 0), Number(row?.answered ?? 0));
+}
+
 async function updateVerifiedMastery(env: Env, userId: string, topicId: string): Promise<void> {
   const answerRows = await env.DB
     .prepare(
@@ -542,7 +563,7 @@ app.get("/api/dashboard", async (c) => {
   const user = await requireAuth(c.req.raw, c.env);
   if (!user) return c.json({ error: "認証が必要です。" }, 401);
   const mission = await ensureMission(c.env, user.id);
-  const [items, exam, practiceStats, verifiedStats, mastery, content] = await Promise.all([
+  const [items, exam, practiceStats, verifiedStats, mastery, content, questionProgress] = await Promise.all([
     c.env.DB.prepare("SELECT id, item_type, title, estimated_minutes, status FROM daily_mission_items WHERE mission_id = ? ORDER BY item_order").bind(mission.id).all(),
     c.env.DB.prepare("SELECT exam_date, law_reference_date FROM exam_settings WHERE exam_year = ?").bind(user.examYear).first<{ exam_date: string; law_reference_date: string }>(),
     c.env.DB
@@ -572,6 +593,7 @@ app.get("/api/dashboard", async (c) => {
       .bind(user.id)
       .first<{ knowledge: number; recall: number; distinction: number; transfer: number; writing: number; explanation: number; speed: number; reproducibility: number }>(),
     c.env.DB.prepare("SELECT status, COUNT(*) AS count FROM questions GROUP BY status").all<{ status: string; count: number }>(),
+    getQuestionProgress(c.env, user.id),
   ]);
   const metrics = {
     knowledgeRetention: Number(mastery?.knowledge ?? 0),
@@ -595,6 +617,7 @@ app.get("/api/dashboard", async (c) => {
       highConfidenceErrors: Number(practiceStats?.high_confidence ?? 0),
       verifiedAttempts: Number(verifiedStats?.attempts ?? 0),
       verifiedAccuracy: Math.round(Number(verifiedStats?.accuracy ?? 0) * 100),
+      questionProgress,
     },
     content: Object.fromEntries(content.results.map((item) => [item.status, Number(item.count)])),
   });
@@ -651,7 +674,8 @@ app.get("/api/questions/next", async (c) => {
          GROUP BY question_id
        )
        SELECT q.id, lo.topic_id, q.stem, q.question_type, q.difficulty, q.status, q.correct_explanation, q.reveal_hint,
-       q.judgment_point, t.name AS topic_name, s.name AS subject_name
+       q.judgment_point, t.name AS topic_name, s.name AS subject_name,
+       CASE WHEN ah.question_id IS NULL THEN 0 ELSE 1 END AS previously_answered
        FROM questions q JOIN learning_objectives lo ON lo.id = q.learning_objective_id
        JOIN topics t ON t.id = lo.topic_id JOIN subjects s ON s.id = t.subject_id
        LEFT JOIN answer_history ah ON ah.question_id = q.id
@@ -667,11 +691,15 @@ app.get("/api/questions/next", async (c) => {
     .bind(user.id, user.id, preview ? 1 : 0, parsedType?.data ?? null, parsedType?.data ?? null)
     .first<QuestionRow>();
   if (!question) return c.json({ error: "練習問題を準備中です。管理画面で教材のレビュー状況を確認してください。", code: "CONTENT_NOT_READY" }, 404);
-  const choices = await c.env.DB
-    .prepare("SELECT id, body, choice_order FROM question_choices WHERE question_id = ? ORDER BY choice_order")
-    .bind(question.id)
-    .all<{ id: string; body: string; choice_order: number }>();
-  return c.json({ question: { ...question, choices: choices.results, isAssessmentEligible: question.status === "VERIFIED" } });
+  const [choices, progress, filterProgress] = await Promise.all([
+    c.env.DB
+      .prepare("SELECT id, body, choice_order FROM question_choices WHERE question_id = ? ORDER BY choice_order")
+      .bind(question.id)
+      .all<{ id: string; body: string; choice_order: number }>(),
+    getQuestionProgress(c.env, user.id, { includeDraft: preview }),
+    parsedType?.data ? getQuestionProgress(c.env, user.id, { includeDraft: preview, questionType: parsedType.data }) : Promise.resolve(null),
+  ]);
+  return c.json({ question: { ...question, choices: choices.results, isAssessmentEligible: question.status === "VERIFIED" }, progress, filterProgress });
 });
 
 app.post("/api/answers", async (c) => {
@@ -809,6 +837,7 @@ app.post("/api/answers", async (c) => {
           ? ["TRANSFER", "REVIEW"]
           : ["REVIEW", "HIGH_CONFIDENCE"],
   );
+  const questionProgress = await getQuestionProgress(c.env, auth.user.id);
   return c.json({
     correct,
     contentStatus: question.status,
@@ -819,6 +848,7 @@ app.post("/api/answers", async (c) => {
     judgmentPoint: question.judgment_point,
     errorDna: errorCodes,
     missionItemType,
+    questionProgress,
     sixR: { recall: true, rate: parsed.data.confidence, reveal: true, repair: !correct, reapplyScheduled: !correct, returnAt: dueAt },
     highConfidenceEmergency: errorCodes.includes("HIGH_CONFIDENCE_ERROR"),
   });
@@ -827,7 +857,7 @@ app.post("/api/answers", async (c) => {
 app.get("/api/progress", async (c) => {
   const user = await requireAuth(c.req.raw, c.env);
   if (!user) return c.json({ error: "認証が必要です。" }, 401);
-  const [practice, verified, summary, dna, mastery, coverage] = await Promise.all([
+  const [practice, verified, summary, dna, mastery, coverage, questionProgress] = await Promise.all([
     c.env.DB
       .prepare(
         `SELECT s.name AS subject, COUNT(*) AS attempts, ROUND(AVG(ua.is_correct) * 100, 1) AS accuracy
@@ -868,12 +898,14 @@ app.get("/api/progress", async (c) => {
       )
       .bind(user.examYear)
       .all(),
+    getQuestionProgress(c.env, user.id),
   ]);
   return c.json({
     summary: {
       practiceAttempts: Number(summary?.attempts ?? 0),
       practiceAccuracy: Number(summary?.accuracy ?? 0),
       practiceMinutes: Math.round(Number(summary?.elapsed_ms ?? 0) / 60_000),
+      ...questionProgress,
     },
     practicePerformance: practice.results,
     verifiedPerformance: verified.results,
@@ -897,7 +929,8 @@ app.post("/api/ai/ask", async (c) => {
     )
     .bind(crypto.randomUUID(), auth.user.id, parsed.data.question.normalize("NFKC").toLowerCase(), parsed.data.question, result.answer, result.sourceTier, result.sourceTier === "WORKERS_AI" ? c.env.AI_MODEL : null, result.estimatedNeurons, result.cached ? 1 : 0)
     .run();
-  return c.json(result);
+  const missionItemType = await completeMissionItem(c.env, auth.user.id, ["REVERSE_LECTURE"]);
+  return c.json({ ...result, missionItemType });
 });
 
 app.get("/api/mock-exams", async (c) => {

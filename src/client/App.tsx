@@ -57,6 +57,13 @@ interface AuthContextValue {
   setUser: (user: User | null) => void;
 }
 
+interface QuestionProgress {
+  totalQuestions: number;
+  answeredQuestions: number;
+  remainingQuestions: number;
+  completionRate: number;
+}
+
 interface DashboardData {
   mission: {
     id: string;
@@ -78,6 +85,7 @@ interface DashboardData {
     highConfidenceErrors: number;
     verifiedAttempts: number;
     verifiedAccuracy: number;
+    questionProgress: QuestionProgress;
   };
   content: Record<string, number>;
 }
@@ -106,7 +114,7 @@ interface WritingReview {
 }
 
 interface ProgressData {
-  summary: { practiceAttempts: number; practiceAccuracy: number; practiceMinutes: number };
+  summary: { practiceAttempts: number; practiceAccuracy: number; practiceMinutes: number } & QuestionProgress;
   practicePerformance: Array<Record<string, unknown>>;
   verifiedPerformance: Array<Record<string, unknown>>;
   errorDna: Array<Record<string, unknown>>;
@@ -677,7 +685,7 @@ function DashboardPage() {
         </article>
         <div className="dashboard-side">
           <article className="readiness-card"><div className="card-head compact"><div><span className="card-kicker">READINESS</span><h3>合格到達度</h3></div><small>{data.readiness.evidenceLevel}</small></div><div className="readiness-score"><strong>{data.readiness.score}</strong><span>%</span><div><i style={{ width: `${data.readiness.score}%` }} /></div></div><p>合格確率ではなく、確認済み学習実績から算出する到達指標です。</p><Link to="/app/progress">内訳を見る <ArrowRight size={15} /></Link></article>
-          <div className="mini-stat-grid"><article><div className="stat-icon teal"><Target /></div><span>練習正答率</span><strong>{data.study.practiceAccuracy}%</strong><small>{data.study.practiceAttempts}問を反映</small></article><article><div className="stat-icon amber"><Clock3 /></div><span>練習時間</span><strong>{data.study.practiceMinutes}<small>分</small></strong><small>REVIEWED以上</small></article></div>
+          <div className="mini-stat-grid"><article><div className="stat-icon teal"><Target /></div><span>問題進捗</span><strong>{data.study.questionProgress.answeredQuestions}<small> / {data.study.questionProgress.totalQuestions}問</small></strong><small>残り {data.study.questionProgress.remainingQuestions}問</small></article><article><div className="stat-icon amber"><Gauge /></div><span>練習正答率</span><strong>{data.study.practiceAccuracy}%</strong><small>総回答 {data.study.practiceAttempts}回</small></article></div>
           <article className="forecast-card"><div><span className="card-kicker">FORGETTING FORECAST</span><h3>忘却予報</h3></div><div className="forecast-row"><span className="forecast-orb"><RefreshCw /></span><p><strong>{Math.max(0, data.mission.items.filter((item) => item.item_type === "REVIEW").length)}セット</strong><small>今日の復習対象</small></p><Link to="/app/questions"><ChevronRight /></Link></div></article>
           <article className="alert-card"><AlertTriangle /><div><span>高確信誤答</span><strong>{data.study.highConfidenceErrors}件</strong><p>確信して間違えたルールを優先修正</p></div><Link to="/app/questions"><ArrowRight /></Link></article>
         </div>
@@ -733,6 +741,15 @@ function LearnPage() {
   </>;
 }
 
+function QuestionProgressPanel({ progress, filterProgress }: { progress: QuestionProgress; filterProgress: QuestionProgress | null }) {
+  return <section className="question-progress-panel" aria-label="問題バンク進捗">
+    <div className="question-progress-head"><div><span className="card-kicker">QUESTION BANK PROGRESS</span><h2>全{progress.totalQuestions.toLocaleString("ja-JP")}問中、{progress.answeredQuestions.toLocaleString("ja-JP")}問を解答済み</h2></div><strong>{progress.completionRate}<small>%</small></strong></div>
+    <div className="question-progress-track" role="progressbar" aria-label="問題バンク完了率" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.completionRate}><i style={{ width: `${progress.completionRate}%` }} /></div>
+    <div className="question-progress-foot"><span>残り {progress.remainingQuestions.toLocaleString("ja-JP")}問</span><Link to="/app/progress">成績で詳しく見る <ArrowRight size={14} /></Link></div>
+    {filterProgress && <p className="filter-progress">選択中の形式：{filterProgress.answeredQuestions} / {filterProgress.totalQuestions}問を解答済み</p>}
+  </section>;
+}
+
 function QuestionsPage() {
   const { user } = useAuth();
   const location = useLocation();
@@ -745,14 +762,18 @@ function QuestionsPage() {
   const [message, setMessage] = useState("");
   const [startedAt, setStartedAt] = useState(() => Date.now());
   const [preview, setPreview] = useState(false);
+  const [progress, setProgress] = useState<QuestionProgress | null>(null);
+  const [filterProgress, setFilterProgress] = useState<QuestionProgress | null>(null);
   const load = useCallback(async () => {
     setResult(null); setChoice(""); setWrittenAnswer(""); setMessage(""); setStartedAt(Date.now());
     const params = new URLSearchParams();
     if (preview) params.set("preview", "true");
     if (requestedType) params.set("type", requestedType);
     try {
-      const value = await api<{ question: Record<string, unknown> }>(`/api/questions/next${params.size ? `?${params}` : ""}`);
+      const value = await api<{ question: Record<string, unknown>; progress: QuestionProgress; filterProgress: QuestionProgress | null }>(`/api/questions/next${params.size ? `?${params}` : ""}`);
       setQuestion(value.question);
+      setProgress(value.progress);
+      setFilterProgress(value.filterProgress);
     } catch (cause) {
       setQuestion(null);
       setMessage(cause instanceof Error ? cause.message : "問題を取得できませんでした。");
@@ -765,6 +786,8 @@ function QuestionsPage() {
     try {
       const value = await api<Record<string, unknown>>("/api/answers", { method: "POST", body: JSON.stringify({ questionId: question.id, selectedChoiceId: isWriting ? undefined : choice, writtenAnswer: isWriting ? writtenAnswer : undefined, confidence, elapsedMs: Date.now() - startedAt, hintUsed: false }) });
       setResult(value);
+      const nextProgress = value.questionProgress as QuestionProgress | undefined;
+      if (nextProgress) setProgress(nextProgress);
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "回答を保存できませんでした。");
     }
@@ -773,6 +796,7 @@ function QuestionsPage() {
   const writingReview = result?.writingReview as WritingReview | null | undefined;
   return <>
     <PageIntro eyebrow="PRACTICE" title={requestedType === "WRITING" ? "40字記述" : "問題演習"} description="回答はすぐ練習成績へ反映。VERIFIED問題だけを合格到達度・診断・模試に使います。" action={user?.role === "ADMIN" && <label className="toggle-label"><input type="checkbox" checked={preview} onChange={(event) => setPreview(event.target.checked)} />DRAFTプレビュー</label>} />
+    {progress && <QuestionProgressPanel progress={progress} filterProgress={filterProgress} />}
     {!question ? <EmptyState icon={<FilePenLine />} title="問題を準備中です" text={message || "レビュー済みの練習問題が公開されると、ここから学習できます。"} action={user?.role === "ADMIN" ? <button className="button button-ghost" onClick={() => setPreview(true)}>DRAFTを確認</button> : undefined} /> : <section className="question-card">
       <div className="question-meta"><span>{String(question.subject_name)} · {String(question.topic_name)}</span><span className={`badge ${String(question.status).toLowerCase()}`}>{String(question.status)}</span><em>{String(question.difficulty)}</em></div>
       <h2>{String(question.stem)}</h2>
@@ -786,9 +810,34 @@ function QuestionsPage() {
 }
 
 function TeacherPage() {
-  const [question, setQuestion] = useState(""); const [answer, setAnswer] = useState<{ answer: string; sourceTier: string; cached: boolean; sources: Array<{ title: string; url?: string }> } | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  const ask = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(""); try { setAnswer(await api("/api/ai/ask", { method: "POST", body: JSON.stringify({ question }) })); } catch (cause) { setError(cause instanceof Error ? cause.message : "質問できませんでした。"); } finally { setBusy(false); } };
-  return <><PageIntro eyebrow="GROUNDED AI TUTOR" title="AI先生" description="確認済み資料を先に検索し、根拠が足りないときは推測せずに伝えます。" /><section className="teacher-layout"><div className="teacher-chat"><div className="teacher-intro"><span><BrainCircuit /></span><div><h2>何を整理しますか？</h2><p>例：「取消訴訟と審査請求の違いは？」</p></div></div>{answer && <article className="ai-answer"><div className="answer-source"><span>{answer.sourceTier}</span>{answer.cached && <em>CACHE HIT</em>}</div><p>{answer.answer}</p>{answer.sources.length > 0 && <div className="source-list"><strong>参照した確認済み資料</strong>{answer.sources.map((source) => source.url ? <a key={source.title} href={source.url} target="_blank" rel="noreferrer">{source.title}<ArrowRight size={13} /></a> : <span key={source.title}>{source.title}</span>)}</div>}</article>}{error && <div className="form-error">{error}</div>}<form className="teacher-form" onSubmit={(event) => void ask(event)}><label htmlFor="teacher-question" className="sr-only">AI先生への質問</label><textarea id="teacher-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="分からない点を具体的に入力…" maxLength={1000} /><button aria-label="質問を送信" disabled={busy || question.trim().length < 2}>{busy ? <span className="spinner small" /> : <ArrowRight />}</button></form></div><aside className="ai-policy"><ShieldCheck /><h3>根拠優先の回答順</h3><ol>{["VERIFIED FAQ", "確認済みテキスト講義", "VERIFIED問題解説", "登録済み比較表", "確認済み回答キャッシュ", "Workers AI"].map((item, index) => <li key={item}><span>{index + 1}</span>{item}</li>)}</ol><p>AI利用枠終了後も、問題・復習・テキスト講義は利用できます。</p></aside></section></>;
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState<{ answer: string; sourceTier: string; cached: boolean; sources: Array<{ title: string; url?: string }>; missionItemType: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const ask = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    setAnswer(null);
+    try {
+      setAnswer(await api("/api/ai/ask", { method: "POST", body: JSON.stringify({ question }) }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "質問できませんでした。");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sourceLabel = answer?.sourceTier === "WORKERS_AI" ? "AI回答" : answer?.sourceTier === "LECTURE" ? "教材フォールバック" : answer?.sourceTier === "FAQ" ? "確認済みFAQ" : answer?.sourceTier === "CACHE" ? "回答キャッシュ" : "根拠不足";
+  return <>
+    <PageIntro eyebrow="GROUNDED AI TUTOR" title="AI先生" description="確認済み・レビュー済み教材を検索し、AIに接続できないときも教材から根拠付きで案内します。" />
+    <section className="teacher-layout"><div className="teacher-chat">
+      <div className="teacher-intro"><span><BrainCircuit /></span><div><h2>何を整理しますか？</h2><p>例：「取消訴訟と審査請求の違いは？」</p></div></div>
+      {answer && <article className="ai-answer"><div className="answer-source"><span>{sourceLabel}</span>{answer.cached && <em>CACHE HIT</em>}</div><p>{answer.answer}</p>{answer.sources.length > 0 && <div className="source-list"><strong>参照した教材</strong>{answer.sources.map((source) => source.url ? <a key={source.title} href={source.url} target="_blank" rel="noreferrer">{source.title}<ArrowRight size={13} /></a> : <span key={source.title}>{source.title}</span>)}</div>}</article>}
+      {answer?.missionItemType === "REVERSE_LECTURE" && <div className="completion-notice teacher-completion"><CheckCircle2 />AI反転講義のミッションを完了しました。</div>}
+      {error && <div className="form-error">{error}</div>}
+      <form className="teacher-form" onSubmit={(event) => void ask(event)}><label htmlFor="teacher-question" className="sr-only">AI先生への質問</label><textarea id="teacher-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="制度名と知りたい点を具体的に入力…" maxLength={1000} /><button aria-label="質問を送信" disabled={busy || question.trim().length < 2}>{busy ? <span className="spinner small" /> : <ArrowRight />}</button></form>
+    </div><aside className="ai-policy"><ShieldCheck /><h3>根拠優先の回答順</h3><ol>{["VERIFIED FAQ", "確認済み・レビュー済みテキスト講義", "確認済み回答キャッシュ", "Workers AI", "教材フォールバック"].map((item, index) => <li key={item}><span>{index + 1}</span>{item}</li>)}</ol><p>AI生成に接続できない場合も、関連教材の要点を表示して学習を継続できます。</p></aside></section>
+  </>;
 }
 
 function ProgressPage() {
@@ -797,7 +846,7 @@ function ProgressPage() {
   return <>
     <PageIntro eyebrow="LEARNING ANALYTICS" title="成績・到達度" description="日々の練習成績と、最終確認済み問題による合格到達度を分けて表示します。" />
     {!data ? <PageSkeleton /> : <>
-      <div className="practice-summary"><article><span>解答数</span><strong>{data.summary.practiceAttempts}<small>問</small></strong></article><article><span>練習正答率</span><strong>{data.summary.practiceAccuracy}<small>%</small></strong></article><article><span>練習時間</span><strong>{data.summary.practiceMinutes}<small>分</small></strong></article></div>
+      <div className="practice-summary"><article><span>解答済み</span><strong>{data.summary.answeredQuestions}<small> / {data.summary.totalQuestions}問</small></strong></article><article><span>問題進捗</span><strong>{data.summary.completionRate}<small>%</small></strong></article><article><span>残り</span><strong>{data.summary.remainingQuestions}<small>問</small></strong></article><article><span>総回答（復習含む）</span><strong>{data.summary.practiceAttempts}<small>回</small></strong></article><article><span>練習正答率</span><strong>{data.summary.practiceAccuracy}<small>%</small></strong></article><article><span>練習時間</span><strong>{data.summary.practiceMinutes}<small>分</small></strong></article></div>
       <div className="progress-layout">
         <section className="analytics-card"><h2>科目別・練習成績</h2>{data.practicePerformance.length === 0 ? <p className="muted">問題に回答すると、ここへすぐ反映されます。</p> : <div className="performance-list">{data.practicePerformance.map((item) => <div key={String(item.subject)}><span>{String(item.subject)}</span><i><b style={{ width: `${String(item.accuracy)}%` }} /></i><strong>{String(item.accuracy)}%</strong></div>)}</div>}<p className="scope-note">REVIEWED・VERIFIED問題を集計</p></section>
         <section className="analytics-card"><h2>合格到達度の確認データ</h2>{data.verifiedPerformance.length === 0 ? <p className="muted">VERIFIED問題の回答はまだありません。練習成績は左側に記録されています。</p> : <div className="performance-list">{data.verifiedPerformance.map((item) => <div key={String(item.subject)}><span>{String(item.subject)}</span><i><b style={{ width: `${String(item.accuracy)}%` }} /></i><strong>{String(item.accuracy)}%</strong></div>)}</div>}<p className="scope-note">模試・診断・合格到達度はVERIFIEDのみ</p></section>
