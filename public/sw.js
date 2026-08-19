@@ -1,8 +1,8 @@
-const CACHE = "gyosei-pass-v2";
+const CACHE = "gyosei-pass-v3";
 const CORE = [
   "/",
   "/app",
-  "/offline.html",
+  "/offline",
   "/manifest.webmanifest",
   "/icon.svg",
   "/icon-192.png",
@@ -37,7 +37,7 @@ self.addEventListener("fetch", (event) => {
   }).catch(async () => {
     const cached = await caches.match(event.request);
     if (cached) return cached;
-    if (event.request.mode === "navigate") return caches.match("/offline.html");
+    if (event.request.mode === "navigate") return caches.match("/offline");
     return Response.error();
   }));
 });

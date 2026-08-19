@@ -55,7 +55,7 @@ test("can be installed from a smartphone home screen", async ({ page, request })
     expect.objectContaining({ src: "/icon-maskable-512.png", sizes: "512x512", purpose: "maskable" }),
   ]));
 
-  for (const path of ["/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png", "/sw.js"]) {
+  for (const path of ["/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png", "/sw.js", "/offline"]) {
     const response = await request.get(path);
     expect(response.ok(), `${path} should be available`).toBeTruthy();
   }
