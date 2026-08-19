@@ -176,7 +176,7 @@ export function buildMission(signals: MissionSignals): { comebackMode: boolean; 
     { type: "REVIEW", title: `忘れかけ問題 ${Math.min(5, Math.max(1, signals.dueReviews))}問`, minutes: 6 },
     ...(signals.highConfidenceErrors > 0 ? [{ type: "HIGH_CONFIDENCE" as const, title: "高確信誤答を1件修正", minutes: 5 }] : []),
     { type: "ONE_WORD", title: "一語差ドリル 4問", minutes: 4 },
-    { type: "LECTURE", title: `${signals.weakTopic ?? "最優先論点"} ミニ講義`, minutes: 6 },
+    { type: "LECTURE", title: `${signals.weakTopic ?? "最優先論点"} テキスト講義`, minutes: 6 },
     ...(signals.writingDue ? [{ type: "WRITING" as const, title: "40字記述 1問", minutes: 6 }] : []),
     { type: "TRANSFER", title: "初見転移問題 2問", minutes: 5 },
     { type: "REVERSE_LECTURE", title: "AI反転講義 1テーマ", minutes: 3 },

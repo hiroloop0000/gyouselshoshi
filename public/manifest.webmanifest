@@ -1,13 +1,27 @@
 {
+  "id": "/app",
   "name": "行書PASS - 行政書士AI学習",
   "short_name": "行書PASS",
-  "description": "誤答を、本番で使える知識へ変える行政書士学習システム",
+  "description": "問題演習と根拠付きテキスト講義で、誤答を本番で使える知識へ変える行政書士学習アプリ",
   "lang": "ja",
-  "start_url": "/app",
+  "start_url": "/app?source=pwa",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
   "background_color": "#f4f1e9",
   "theme_color": "#112b2a",
+  "categories": ["education", "productivity"],
+  "prefer_related_applications": false,
   "icons": [
-    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "今日の学習", "short_name": "今日の学習", "url": "/app", "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "問題演習", "short_name": "問題", "url": "/app/questions", "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "テキスト講義", "short_name": "講義", "url": "/app/learn", "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
   ]
 }
