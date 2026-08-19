@@ -41,6 +41,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { FormEvent, ReactNode } from "react";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, ApiError } from "./api";
+import { buildAnswerTutorPrompt } from "./teacherContext";
 
 interface User {
   id: string;
@@ -794,6 +795,14 @@ function QuestionsPage() {
   };
   const choices = (question?.choices as Array<{ id: string; body: string; choice_order: number }> | undefined) ?? [];
   const writingReview = result?.writingReview as WritingReview | null | undefined;
+  const selectedChoice = choices.find((item) => item.id === choice);
+  const answerTutorPrompt = result && question ? buildAnswerTutorPrompt({
+    stem: String(question.stem),
+    userAnswer: isWriting ? writtenAnswer : selectedChoice?.body,
+    modelAnswer: writingReview?.modelAnswer,
+    explanation: String(result.explanation ?? ""),
+    judgmentPoint: result.judgmentPoint ? String(result.judgmentPoint) : undefined,
+  }) : "";
   return <>
     <PageIntro eyebrow="PRACTICE" title={requestedType === "WRITING" ? "40字記述" : "問題演習"} description="回答はすぐ練習成績へ反映。VERIFIED問題だけを合格到達度・診断・模試に使います。" action={user?.role === "ADMIN" && <label className="toggle-label"><input type="checkbox" checked={preview} onChange={(event) => setPreview(event.target.checked)} />DRAFTプレビュー</label>} />
     {progress && <QuestionProgressPanel progress={progress} filterProgress={filterProgress} />}
@@ -804,13 +813,16 @@ function QuestionsPage() {
       {question.status === "DRAFT" && <div className="draft-warning"><AlertTriangle size={18} />管理者プレビュー専用です。成績・到達度・診断・模試には算入されません。</div>}
       {isWriting ? <div className="writing-answer"><label htmlFor="writing-answer">40字程度で答案を入力</label><textarea id="writing-answer" value={writtenAnswer} onChange={(event) => setWrittenAnswer(event.target.value)} maxLength={80} placeholder="主体・要件・効果を意識して記述してください" /><span className={writtenAnswer.length >= 20 && writtenAnswer.length <= 60 ? "in-range" : ""}>{[...writtenAnswer].length}字 / 目安20〜60字</span></div> : <div className="choices">{choices.map((item) => <label key={item.id} className={choice === item.id ? "selected" : ""}><input type="radio" name="choice" value={item.id} checked={choice === item.id} onChange={() => setChoice(item.id)} /><span>{item.choice_order}</span><p>{item.body}</p></label>)}</div>}
       {!result && <><div className="confidence-block"><strong>この答えへの確信度</strong><div>{[["EXPLAIN", "根拠まで説明できる"], ["PROBABLE", "たぶん正しい"], ["GUESS", "勘・消去法"]].map(([value, label]) => <button key={value} className={confidence === value ? "selected" : ""} onClick={() => setConfidence(value as typeof confidence)}>{label}</button>)}</div></div><button className="button button-primary full" disabled={isWriting ? writtenAnswer.trim().length === 0 : !choice} onClick={() => void submit()}>回答を確定する</button></>}
-      {result && <div className={result.correct ? "answer-result correct" : "answer-result incorrect"}><div className="result-title">{result.correct ? <CheckCircle2 /> : <AlertTriangle />}<h3>{result.correct ? (isWriting ? "採点基準を満たしました" : "正解") : (isWriting ? "必要な法的要素を補強しましょう" : "もう一度、判断の分岐を確認")}</h3></div><div className="score-scope"><CheckCircle2 />練習成績へ反映済み{!result.includedInReadiness && "（合格到達度とは分離）"}</div>{writingReview && <div className="writing-review"><strong>要素得点 {writingReview.score}%</strong><span>{writingReview.matchedGroups} / {writingReview.totalGroups} 要素 · {writingReview.charCount}字</span><p><b>模範解答</b>{writingReview.modelAnswer}</p><p><b>必要要素</b>{writingReview.requiredElements.join("・")}</p></div>}<p>{String(result.explanation)}</p>{Boolean(result.judgmentPoint) && <div className="judgment-point"><strong>今回の判断ポイント</strong><p>{String(result.judgmentPoint)}</p></div>}{Boolean(result.highConfidenceEmergency) && <div className="emergency"><AlertTriangle /><div><strong>高確信誤答救急室へ</strong><p>採用した判断ルールを保存し、比較・変形問題・翌日再テストへつなげました。</p></div></div>}<div className="result-actions"><button className="button button-ghost" onClick={() => void load()}>次の問題へ</button><Link className="button button-primary" to="/app/learn">関連テキスト講義で修復</Link></div></div>}
+      {result && <div className={result.correct ? "answer-result correct" : "answer-result incorrect"}><div className="result-title">{result.correct ? <CheckCircle2 /> : <AlertTriangle />}<h3>{result.correct ? (isWriting ? "採点基準を満たしました" : "正解") : (isWriting ? "必要な法的要素を補強しましょう" : "もう一度、判断の分岐を確認")}</h3></div><div className="score-scope"><CheckCircle2 />練習成績へ反映済み{!result.includedInReadiness && "（合格到達度とは分離）"}</div>{writingReview && <div className="writing-review"><strong>要素得点 {writingReview.score}%</strong><span>{writingReview.matchedGroups} / {writingReview.totalGroups} 要素 · {writingReview.charCount}字</span><p><b>模範解答</b>{writingReview.modelAnswer}</p><p><b>必要要素</b>{writingReview.requiredElements.join("・")}</p></div>}<p>{String(result.explanation)}</p>{Boolean(result.judgmentPoint) && <div className="judgment-point"><strong>今回の判断ポイント</strong><p>{String(result.judgmentPoint)}</p></div>}{Boolean(result.highConfidenceEmergency) && <div className="emergency"><AlertTriangle /><div><strong>高確信誤答救急室へ</strong><p>採用した判断ルールを保存し、比較・変形問題・翌日再テストへつなげました。</p></div></div>}<div className="result-actions"><button className="button button-ghost" onClick={() => void load()}>次の問題へ</button><Link className="button button-ghost" to="/app/learn">関連テキスト講義で修復</Link><Link className="button button-ai" to="/app/teacher" state={{ initialQuestion: answerTutorPrompt, fromAnswer: true }}><MessageSquareText size={17} />{writingReview ? "この解答例をAI先生に質問" : "この解説をAI先生に質問"}</Link></div></div>}
     </section>}
   </>;
 }
 
 function TeacherPage() {
-  const [question, setQuestion] = useState("");
+  const location = useLocation();
+  const navigationState = location.state as { initialQuestion?: unknown; fromAnswer?: unknown } | null;
+  const initialQuestion = typeof navigationState?.initialQuestion === "string" ? navigationState.initialQuestion.slice(0, 1000) : "";
+  const [question, setQuestion] = useState(initialQuestion);
   const [answer, setAnswer] = useState<{ answer: string; sourceTier: string; cached: boolean; sources: Array<{ title: string; url?: string }>; missionItemType: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -831,6 +843,7 @@ function TeacherPage() {
   return <>
     <PageIntro eyebrow="GROUNDED AI TUTOR" title="AI先生" description="確認済み・レビュー済み教材を検索し、AIに接続できないときも教材から根拠付きで案内します。" />
     <section className="teacher-layout"><div className="teacher-chat">
+      {navigationState?.fromAnswer === true && initialQuestion && <div className="teacher-context-notice"><MessageSquareText /><div><strong>問題と解答を引き継ぎました</strong><p>下の質問文を編集して、解答例や判断ポイントをAI先生に確認できます。</p></div></div>}
       <div className="teacher-intro"><span><BrainCircuit /></span><div><h2>何を整理しますか？</h2><p>例：「取消訴訟と審査請求の違いは？」</p></div></div>
       {answer && <article className="ai-answer"><div className="answer-source"><span>{sourceLabel}</span>{answer.cached && <em>CACHE HIT</em>}</div><p>{answer.answer}</p>{answer.sources.length > 0 && <div className="source-list"><strong>参照した教材</strong>{answer.sources.map((source) => source.url ? <a key={source.title} href={source.url} target="_blank" rel="noreferrer">{source.title}<ArrowRight size={13} /></a> : <span key={source.title}>{source.title}</span>)}</div>}</article>}
       {answer?.missionItemType === "REVERSE_LECTURE" && <div className="completion-notice teacher-completion"><CheckCircle2 />AI反転講義のミッションを完了しました。</div>}
