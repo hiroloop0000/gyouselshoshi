@@ -38,3 +38,32 @@ test("shares the current URL by clipboard and QR code", async ({ page, context }
   await expect(page.getByRole("img", { name: "行書PASS共有用QRコード" })).toBeVisible();
   await expect(page.getByText("http://127.0.0.1:4173/")).toBeVisible();
 });
+
+test("can be installed from a smartphone home screen", async ({ page, request }) => {
+  const manifestResponse = await request.get("/manifest.webmanifest");
+  expect(manifestResponse.ok()).toBeTruthy();
+  const manifest = await manifestResponse.json();
+  expect(manifest).toMatchObject({
+    id: "/app",
+    start_url: "/app?source=pwa",
+    display: "standalone",
+    theme_color: "#112b2a",
+  });
+  expect(manifest.icons).toEqual(expect.arrayContaining([
+    expect.objectContaining({ src: "/icon-192.png", sizes: "192x192", type: "image/png" }),
+    expect.objectContaining({ src: "/icon-512.png", sizes: "512x512", type: "image/png" }),
+    expect.objectContaining({ src: "/icon-maskable-512.png", sizes: "512x512", purpose: "maskable" }),
+  ]));
+
+  for (const path of ["/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png", "/sw.js", "/offline"]) {
+    const response = await request.get(path);
+    expect(response.ok(), `${path} should be available`).toBeTruthy();
+  }
+
+  await page.addInitScript("window.addEventListener('beforeinstallprompt', event => event.stopImmediatePropagation(), true)");
+  await page.goto("/");
+  await expect(page.getByText("行政事件訴訟法テキスト講義")).toBeVisible();
+  await page.getByRole("button", { name: "アプリを追加" }).click();
+  await expect(page.getByRole("dialog", { name: "ホーム画面に追加する方法" })).toBeVisible();
+  await expect(page.getByText(/Chrome右上のメニュー|Safari下部の共有ボタン/)).toBeVisible();
+});

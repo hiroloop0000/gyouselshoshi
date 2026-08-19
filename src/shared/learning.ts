@@ -80,6 +80,41 @@ export interface MasteryEvidence {
   verifiedAttempts: number;
 }
 
+export interface WritingRubricConfig {
+  groups: string[][];
+  minimumRatio: number;
+  minLength: number;
+  maxLength: number;
+}
+
+export interface WritingScore {
+  score: number;
+  charCount: number;
+  matchedGroups: number;
+  totalGroups: number;
+  lengthOk: boolean;
+  passed: boolean;
+}
+
+const normalizeWritingText = (value: string): string => value.normalize("NFKC").replace(/\s+/g, "").toLowerCase();
+
+export function scoreWritingAnswer(answer: string, rubric: WritingRubricConfig): WritingScore {
+  const normalized = normalizeWritingText(answer);
+  const charCount = [...answer.trim()].length;
+  const groups = rubric.groups.filter((group) => group.length > 0);
+  const matchedGroups = groups.filter((group) => group.some((term) => normalized.includes(normalizeWritingText(term)))).length;
+  const ratio = groups.length === 0 ? 0 : matchedGroups / groups.length;
+  const lengthOk = charCount >= rubric.minLength && charCount <= rubric.maxLength;
+  return {
+    score: Math.round(ratio * 100),
+    charCount,
+    matchedGroups,
+    totalGroups: groups.length,
+    lengthOk,
+    passed: lengthOk && ratio >= rubric.minimumRatio,
+  };
+}
+
 export function calculateMastery(evidence: MasteryEvidence): MasteryMetrics {
   const reliability = clamp(evidence.verifiedAttempts / 12);
   const conservative = (value: number): number => Math.round(clamp(value) * reliability * 100);
@@ -141,7 +176,7 @@ export function buildMission(signals: MissionSignals): { comebackMode: boolean; 
     { type: "REVIEW", title: `忘れかけ問題 ${Math.min(5, Math.max(1, signals.dueReviews))}問`, minutes: 6 },
     ...(signals.highConfidenceErrors > 0 ? [{ type: "HIGH_CONFIDENCE" as const, title: "高確信誤答を1件修正", minutes: 5 }] : []),
     { type: "ONE_WORD", title: "一語差ドリル 4問", minutes: 4 },
-    { type: "LECTURE", title: `${signals.weakTopic ?? "最優先論点"} ミニ講義`, minutes: 6 },
+    { type: "LECTURE", title: `${signals.weakTopic ?? "最優先論点"} テキスト講義`, minutes: 6 },
     ...(signals.writingDue ? [{ type: "WRITING" as const, title: "40字記述 1問", minutes: 6 }] : []),
     { type: "TRANSFER", title: "初見転移問題 2問", minutes: 5 },
     { type: "REVERSE_LECTURE", title: "AI反転講義 1テーマ", minutes: 3 },
@@ -154,6 +189,24 @@ export function buildMission(signals: MissionSignals): { comebackMode: boolean; 
     used += item.minutes;
   }
   return { comebackMode, items, estimatedMinutes: used };
+}
+
+export interface QuestionProgress {
+  totalQuestions: number;
+  answeredQuestions: number;
+  remainingQuestions: number;
+  completionRate: number;
+}
+
+export function calculateQuestionProgress(totalQuestions: number, answeredQuestions: number): QuestionProgress {
+  const total = Math.max(0, Math.trunc(totalQuestions));
+  const answered = Math.min(total, Math.max(0, Math.trunc(answeredQuestions)));
+  return {
+    totalQuestions: total,
+    answeredQuestions: answered,
+    remainingQuestions: total - answered,
+    completionRate: total === 0 ? 0 : Math.round((answered / total) * 1000) / 10,
+  };
 }
 
 export function validateInvitationSnapshot(input: {

@@ -4,11 +4,14 @@ import { z } from "zod";
 import {
   buildMission,
   calculateMastery,
+  calculateQuestionProgress,
   calculateReadiness,
   calculateReviewPriority,
   classifyErrorDna,
   nextReviewIntervalDays,
+  scoreWritingAnswer,
 } from "../shared/learning";
+import type { QuestionProgress, WritingRubricConfig } from "../shared/learning";
 import { invitationRequiredFor, normalizeRegistrationMode } from "../shared/registration";
 import { answerAiQuestion } from "./ai";
 import { csrfCookie, expiredCsrfCookie } from "./cookies";
@@ -61,6 +64,15 @@ const answerSchema = z.object({
   reasoningNote: z.string().max(1000).optional(),
 });
 
+const questionTypeFilterSchema = z.enum([
+  "SINGLE_CHOICE",
+  "MULTI_CHOICE",
+  "WRITING",
+  "TRANSFER",
+  "COMPARISON",
+  "ONE_WORD_DIFF",
+]);
+
 const aiQuestionSchema = z.object({ question: z.string().trim().min(2).max(1000) });
 
 const invitationSchema = z.object({
@@ -84,6 +96,7 @@ interface UserRow {
 
 interface QuestionRow {
   id: string;
+  topic_id: string;
   stem: string;
   question_type: string;
   difficulty: string;
@@ -111,6 +124,26 @@ interface ExamRow {
   knowledge_question_count: number;
   scoring_published: number;
   official_source_url: string;
+}
+
+interface WritingRubricRow {
+  model_answer: string;
+  required_elements_json: string;
+  rubric_json: string;
+}
+
+interface VerifiedAnswerRow {
+  question_id: string;
+  question_type: string;
+  is_correct: number;
+  hint_used: number;
+  confidence: "EXPLAIN" | "PROBABLE" | "GUESS";
+  elapsed_ms: number;
+  answered_at: string;
+}
+
+function japanDate(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(new Date());
 }
 
 function clientIp(request: Request): string {
@@ -378,7 +411,7 @@ app.post("/api/onboarding", async (c) => {
 });
 
 async function ensureMission(env: Env, userId: string): Promise<{ id: string; comebackMode: boolean; estimatedMinutes: number }> {
-  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(new Date());
+  const today = japanDate();
   const existing = await env.DB
     .prepare("SELECT id, comeback_mode, estimated_minutes FROM daily_missions WHERE user_id = ? AND mission_date = ?")
     .bind(userId, today)
@@ -425,24 +458,130 @@ async function ensureMission(env: Env, userId: string): Promise<{ id: string; co
   return { id: missionId, comebackMode: mission.comebackMode, estimatedMinutes: mission.estimatedMinutes };
 }
 
+async function completeMissionItem(env: Env, userId: string, itemTypes: string[]): Promise<string | null> {
+  const mission = await ensureMission(env, userId);
+  const pending = await env.DB
+    .prepare("SELECT id, item_type FROM daily_mission_items WHERE mission_id = ? AND status = 'PENDING' ORDER BY item_order")
+    .bind(mission.id)
+    .all<{ id: string; item_type: string }>();
+  const item = itemTypes.map((type) => pending.results.find((candidate) => candidate.item_type === type)).find(Boolean);
+  if (!item) return null;
+  await env.DB.batch([
+    env.DB.prepare("UPDATE daily_mission_items SET status = 'DONE' WHERE id = ?").bind(item.id),
+    env.DB
+      .prepare("UPDATE daily_missions SET completed_items = (SELECT COUNT(*) FROM daily_mission_items WHERE mission_id = ? AND status = 'DONE') WHERE id = ?")
+      .bind(mission.id, mission.id),
+  ]);
+  return item.item_type;
+}
+
+async function getQuestionProgress(
+  env: Env,
+  userId: string,
+  options: { includeDraft?: boolean; questionType?: string | null } = {},
+): Promise<QuestionProgress> {
+  const statuses = options.includeDraft ? "('DRAFT', 'REVIEWED', 'VERIFIED')" : "('REVIEWED', 'VERIFIED')";
+  const questionType = options.questionType ?? null;
+  const row = await env.DB
+    .prepare(
+      `SELECT COUNT(q.id) AS total,
+       COALESCE(SUM(CASE WHEN answered.question_id IS NULL THEN 0 ELSE 1 END), 0) AS answered
+       FROM questions q
+       LEFT JOIN (SELECT DISTINCT question_id FROM user_answers WHERE user_id = ?) answered ON answered.question_id = q.id
+       WHERE q.status IN ${statuses} AND (? IS NULL OR q.question_type = ?)`,
+    )
+    .bind(userId, questionType, questionType)
+    .first<{ total: number; answered: number }>();
+  return calculateQuestionProgress(Number(row?.total ?? 0), Number(row?.answered ?? 0));
+}
+
+async function updateVerifiedMastery(env: Env, userId: string, topicId: string): Promise<void> {
+  const answerRows = await env.DB
+    .prepare(
+      `SELECT ua.question_id, q.question_type, ua.is_correct, ua.hint_used, ua.confidence, ua.elapsed_ms, ua.answered_at
+       FROM user_answers ua JOIN questions q ON q.id = ua.question_id
+       JOIN learning_objectives lo ON lo.id = q.learning_objective_id
+       WHERE ua.user_id = ? AND lo.topic_id = ? AND q.status = 'VERIFIED'
+       ORDER BY ua.answered_at`,
+    )
+    .bind(userId, topicId)
+    .all<VerifiedAnswerRow>();
+  const answers = answerRows.results;
+  if (answers.length === 0) return;
+  const average = (rows: VerifiedAnswerRow[], selector: (row: VerifiedAnswerRow) => number = (row) => row.is_correct): number =>
+    rows.length === 0 ? 0 : rows.reduce((sum, row) => sum + selector(row), 0) / rows.length;
+  const seen = new Set<string>();
+  const spaced = answers.filter((answer) => {
+    if (seen.has(answer.question_id)) return true;
+    seen.add(answer.question_id);
+    return false;
+  });
+  const noHint = answers.filter((answer) => answer.hint_used === 0);
+  const comparison = answers.filter((answer) => ["COMPARISON", "ONE_WORD_DIFF"].includes(answer.question_type));
+  const transfer = answers.filter((answer) => answer.question_type === "TRANSFER");
+  const writing = answers.filter((answer) => answer.question_type === "WRITING");
+  const explain = answers.filter((answer) => answer.confidence === "EXPLAIN");
+  const metrics = calculateMastery({
+    verifiedAccuracy: average(answers),
+    spacedAccuracy: average(spaced),
+    noHintAccuracy: average(noHint),
+    comparisonAccuracy: average(comparison),
+    transferAccuracy: average(transfer),
+    writingScore: average(writing),
+    explanationScore: average(explain),
+    timedAccuracy: average(answers, (answer) => (answer.is_correct === 1 && answer.elapsed_ms <= 90_000 ? 1 : 0)),
+    verifiedAttempts: answers.length,
+  });
+  await env.DB
+    .prepare(
+      `INSERT INTO user_topic_mastery
+       (user_id, topic_id, knowledge_retention, recall_stability, distinction_skill, transfer_skill, writing_skill, evidence_explanation, answer_speed, exam_reproducibility)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, topic_id) DO UPDATE SET
+       knowledge_retention = excluded.knowledge_retention, recall_stability = excluded.recall_stability,
+       distinction_skill = excluded.distinction_skill, transfer_skill = excluded.transfer_skill,
+       writing_skill = excluded.writing_skill, evidence_explanation = excluded.evidence_explanation,
+       answer_speed = excluded.answer_speed, exam_reproducibility = excluded.exam_reproducibility,
+       updated_at = CURRENT_TIMESTAMP`,
+    )
+    .bind(
+      userId,
+      topicId,
+      metrics.knowledgeRetention,
+      metrics.recallStability,
+      metrics.distinctionSkill,
+      metrics.transferSkill,
+      metrics.writingSkill,
+      metrics.evidenceExplanation,
+      metrics.answerSpeed,
+      metrics.examReproducibility,
+    )
+    .run();
+}
+
 app.get("/api/dashboard", async (c) => {
   const user = await requireAuth(c.req.raw, c.env);
   if (!user) return c.json({ error: "認証が必要です。" }, 401);
   const mission = await ensureMission(c.env, user.id);
-  const [items, exam, stats, mastery, content] = await Promise.all([
+  const [items, exam, practiceStats, verifiedStats, mastery, content, questionProgress] = await Promise.all([
     c.env.DB.prepare("SELECT id, item_type, title, estimated_minutes, status FROM daily_mission_items WHERE mission_id = ? ORDER BY item_order").bind(mission.id).all(),
     c.env.DB.prepare("SELECT exam_date, law_reference_date FROM exam_settings WHERE exam_year = ?").bind(user.examYear).first<{ exam_date: string; law_reference_date: string }>(),
     c.env.DB
       .prepare(
         `SELECT COUNT(*) AS attempts, COALESCE(AVG(ua.is_correct), 0) AS accuracy,
          COALESCE(SUM(ua.elapsed_ms), 0) AS elapsed_ms,
-         COALESCE(SUM(CASE WHEN ede.error_code = 'HIGH_CONFIDENCE_ERROR' THEN 1 ELSE 0 END), 0) AS high_confidence
+         COALESCE(SUM(CASE WHEN EXISTS (
+           SELECT 1 FROM error_dna_events ede WHERE ede.user_answer_id = ua.id AND ede.error_code = 'HIGH_CONFIDENCE_ERROR'
+         ) THEN 1 ELSE 0 END), 0) AS high_confidence
          FROM user_answers ua JOIN questions q ON q.id = ua.question_id
-         LEFT JOIN error_dna_events ede ON ede.user_answer_id = ua.id
-         WHERE ua.user_id = ? AND q.status = 'VERIFIED'`,
+         WHERE ua.user_id = ? AND q.status IN ('REVIEWED', 'VERIFIED')`,
       )
       .bind(user.id)
       .first<{ attempts: number; accuracy: number; elapsed_ms: number; high_confidence: number }>(),
+    c.env.DB
+      .prepare("SELECT COUNT(*) AS attempts, COALESCE(AVG(ua.is_correct), 0) AS accuracy FROM user_answers ua JOIN questions q ON q.id = ua.question_id WHERE ua.user_id = ? AND q.status = 'VERIFIED'")
+      .bind(user.id)
+      .first<{ attempts: number; accuracy: number }>(),
     c.env.DB
       .prepare(
         `SELECT COALESCE(AVG(knowledge_retention), 0) AS knowledge, COALESCE(AVG(recall_stability), 0) AS recall,
@@ -454,6 +593,7 @@ app.get("/api/dashboard", async (c) => {
       .bind(user.id)
       .first<{ knowledge: number; recall: number; distinction: number; transfer: number; writing: number; explanation: number; speed: number; reproducibility: number }>(),
     c.env.DB.prepare("SELECT status, COUNT(*) AS count FROM questions GROUP BY status").all<{ status: string; count: number }>(),
+    getQuestionProgress(c.env, user.id),
   ]);
   const metrics = {
     knowledgeRetention: Number(mastery?.knowledge ?? 0),
@@ -469,8 +609,16 @@ app.get("/api/dashboard", async (c) => {
   return c.json({
     mission: { ...mission, items: items.results },
     exam: { examDate, lawReferenceDate: exam?.law_reference_date, daysRemaining: Math.max(0, Math.ceil((Date.parse(examDate) - Date.now()) / 86_400_000)) },
-    readiness: { score: calculateReadiness(metrics), label: "合格到達度", metrics, evidenceLevel: Number(stats?.attempts ?? 0) >= 30 ? "蓄積中" : "参考値・データ不足" },
-    study: { verifiedAttempts: Number(stats?.attempts ?? 0), accuracy: Math.round(Number(stats?.accuracy ?? 0) * 100), minutes: Math.round(Number(stats?.elapsed_ms ?? 0) / 60_000), highConfidenceErrors: Number(stats?.high_confidence ?? 0) },
+    readiness: { score: calculateReadiness(metrics), label: "合格到達度", metrics, evidenceLevel: Number(verifiedStats?.attempts ?? 0) >= 30 ? "蓄積中" : "参考値・データ不足" },
+    study: {
+      practiceAttempts: Number(practiceStats?.attempts ?? 0),
+      practiceAccuracy: Math.round(Number(practiceStats?.accuracy ?? 0) * 100),
+      practiceMinutes: Math.round(Number(practiceStats?.elapsed_ms ?? 0) / 60_000),
+      highConfidenceErrors: Number(practiceStats?.high_confidence ?? 0),
+      verifiedAttempts: Number(verifiedStats?.attempts ?? 0),
+      verifiedAccuracy: Math.round(Number(verifiedStats?.accuracy ?? 0) * 100),
+      questionProgress,
+    },
     content: Object.fromEntries(content.results.map((item) => [item.status, Number(item.count)])),
   });
 });
@@ -481,40 +629,77 @@ app.get("/api/lectures", async (c) => {
   const includeDraft = user.role === "ADMIN" && c.req.query("includeDraft") === "true";
   const lectures = await c.env.DB
     .prepare(
-      `SELECT l.id, l.title, l.explanation, l.key_points_json, l.common_mistakes_json, l.estimated_minutes, l.status,
+      `SELECT l.id, l.title, l.explanation, l.key_points_json, l.common_mistakes_json, l.related_law_json, l.estimated_minutes, l.status,
        s.name AS subject_name, t.name AS topic_name
        FROM lectures l JOIN learning_objectives lo ON lo.id = l.learning_objective_id
        JOIN topics t ON t.id = lo.topic_id JOIN subjects s ON s.id = t.subject_id
-       WHERE l.status = 'VERIFIED' OR ? = 1 ORDER BY s.content_priority, t.name, l.title LIMIT 100`,
+       WHERE l.status IN ('VERIFIED', 'REVIEWED') OR (? = 1 AND l.status = 'DRAFT')
+       ORDER BY CASE l.status WHEN 'VERIFIED' THEN 0 WHEN 'REVIEWED' THEN 1 ELSE 2 END, s.content_priority, t.name, l.title LIMIT 100`,
     )
     .bind(includeDraft ? 1 : 0)
     .all();
   return c.json({ lectures: lectures.results, draftVisible: includeDraft });
 });
 
+app.post("/api/lectures/:id/complete", async (c) => {
+  const auth = await requireMutationAuth(c.req.raw, c.env);
+  if (!auth.user) return c.json({ error: "認証が必要です。" }, 401);
+  if (!auth.csrfValid) return c.json({ error: "CSRF検証に失敗しました。" }, 403);
+  const lecture = await c.env.DB
+    .prepare("SELECT id, title, estimated_minutes, status FROM lectures WHERE id = ?")
+    .bind(c.req.param("id"))
+    .first<{ id: string; title: string; estimated_minutes: number; status: string }>();
+  if (!lecture || (lecture.status === "DRAFT" && auth.user.role !== "ADMIN")) return c.json({ error: "講義が見つかりません。" }, 404);
+  await c.env.DB
+    .prepare("INSERT INTO learning_events (id, user_id, event_type, duration_seconds, metadata_json) VALUES (?, ?, 'LECTURE_COMPLETED', ?, ?)")
+    .bind(crypto.randomUUID(), auth.user.id, lecture.estimated_minutes * 60, JSON.stringify({ lectureId: lecture.id, title: lecture.title, status: lecture.status }))
+    .run();
+  const missionItemType = await completeMissionItem(c.env, auth.user.id, ["LECTURE"]);
+  return c.json({ completed: true, missionItemType });
+});
+
 app.get("/api/questions/next", async (c) => {
   const user = await requireAuth(c.req.raw, c.env);
   if (!user) return c.json({ error: "認証が必要です。" }, 401);
   const preview = user.role === "ADMIN" && c.req.query("preview") === "true";
+  const requestedType = c.req.query("type");
+  const parsedType = requestedType ? questionTypeFilterSchema.safeParse(requestedType) : null;
+  if (parsedType && !parsedType.success) return c.json({ error: "出題形式が不正です。" }, 422);
   const question = await c.env.DB
     .prepare(
-      `SELECT q.id, q.stem, q.question_type, q.difficulty, q.status, q.correct_explanation, q.reveal_hint,
-       q.judgment_point, t.name AS topic_name, s.name AS subject_name
+      `WITH answer_history AS (
+         SELECT question_id, MAX(answered_at) AS last_answered_at
+         FROM user_answers
+         WHERE user_id = ?
+         GROUP BY question_id
+       )
+       SELECT q.id, lo.topic_id, q.stem, q.question_type, q.difficulty, q.status, q.correct_explanation, q.reveal_hint,
+       q.judgment_point, t.name AS topic_name, s.name AS subject_name,
+       CASE WHEN ah.question_id IS NULL THEN 0 ELSE 1 END AS previously_answered
        FROM questions q JOIN learning_objectives lo ON lo.id = q.learning_objective_id
        JOIN topics t ON t.id = lo.topic_id JOIN subjects s ON s.id = t.subject_id
+       LEFT JOIN answer_history ah ON ah.question_id = q.id
        LEFT JOIN review_schedule rs ON rs.question_id = q.id AND rs.user_id = ?
-       WHERE (q.status = 'VERIFIED' OR ? = 1)
+       WHERE (q.status IN ('VERIFIED', 'REVIEWED') OR ? = 1)
+       AND (? IS NULL OR q.question_type = ?)
        ORDER BY CASE WHEN rs.status = 'DUE' AND rs.due_at <= CURRENT_TIMESTAMP THEN 0 ELSE 1 END,
-       COALESCE(rs.review_priority, q.importance) DESC, q.created_at LIMIT 1`,
+       CASE WHEN ah.question_id IS NULL THEN 0 ELSE 1 END,
+       COALESCE(rs.review_priority, q.importance) DESC,
+       ah.last_answered_at ASC,
+       q.created_at LIMIT 1`,
     )
-    .bind(user.id, preview ? 1 : 0)
+    .bind(user.id, user.id, preview ? 1 : 0, parsedType?.data ?? null, parsedType?.data ?? null)
     .first<QuestionRow>();
-  if (!question) return c.json({ error: "VERIFIED教材を準備中です。管理画面でレビュー状況を確認してください。", code: "CONTENT_NOT_READY" }, 404);
-  const choices = await c.env.DB
-    .prepare("SELECT id, body, choice_order FROM question_choices WHERE question_id = ? ORDER BY choice_order")
-    .bind(question.id)
-    .all<{ id: string; body: string; choice_order: number }>();
-  return c.json({ question: { ...question, choices: choices.results, isAssessmentEligible: question.status === "VERIFIED" } });
+  if (!question) return c.json({ error: "練習問題を準備中です。管理画面で教材のレビュー状況を確認してください。", code: "CONTENT_NOT_READY" }, 404);
+  const [choices, progress, filterProgress] = await Promise.all([
+    c.env.DB
+      .prepare("SELECT id, body, choice_order FROM question_choices WHERE question_id = ? ORDER BY choice_order")
+      .bind(question.id)
+      .all<{ id: string; body: string; choice_order: number }>(),
+    getQuestionProgress(c.env, user.id, { includeDraft: preview }),
+    parsedType?.data ? getQuestionProgress(c.env, user.id, { includeDraft: preview, questionType: parsedType.data }) : Promise.resolve(null),
+  ]);
+  return c.json({ question: { ...question, choices: choices.results, isAssessmentEligible: question.status === "VERIFIED" }, progress, filterProgress });
 });
 
 app.post("/api/answers", async (c) => {
@@ -523,15 +708,61 @@ app.post("/api/answers", async (c) => {
   if (!auth.csrfValid) return c.json({ error: "CSRF検証に失敗しました。" }, 403);
   const parsed = answerSchema.safeParse(await parseJson(c.req.raw));
   if (!parsed.success) return c.json({ error: "回答データを確認してください。" }, 422);
-  const question = await c.env.DB.prepare("SELECT id, status, importance, correct_explanation, reveal_hint, judgment_point FROM questions WHERE id = ?").bind(parsed.data.questionId).first<{
-    id: string; status: string; importance: number; correct_explanation: string; reveal_hint: string | null; judgment_point: string | null;
-  }>();
+  const question = await c.env.DB
+    .prepare(
+      `SELECT q.id, q.question_type, q.status, q.importance, q.correct_explanation, q.reveal_hint, q.judgment_point, lo.topic_id
+       FROM questions q JOIN learning_objectives lo ON lo.id = q.learning_objective_id WHERE q.id = ?`,
+    )
+    .bind(parsed.data.questionId)
+    .first<{
+      id: string;
+      question_type: string;
+      status: string;
+      importance: number;
+      correct_explanation: string;
+      reveal_hint: string | null;
+      judgment_point: string | null;
+      topic_id: string;
+    }>();
   if (!question) return c.json({ error: "問題が見つかりません。" }, 404);
   const selected = parsed.data.selectedChoiceId
     ? await c.env.DB.prepare("SELECT id, is_correct, explanation FROM question_choices WHERE id = ? AND question_id = ?").bind(parsed.data.selectedChoiceId, question.id).first<ChoiceRow>()
     : null;
-  if (!selected && !parsed.data.writtenAnswer) return c.json({ error: "回答を選択または入力してください。" }, 422);
-  const correct = selected?.is_correct === 1;
+  let correct: boolean;
+  let writingReview: null | {
+    score: number;
+    charCount: number;
+    matchedGroups: number;
+    totalGroups: number;
+    lengthOk: boolean;
+    modelAnswer: string;
+    requiredElements: string[];
+  } = null;
+  if (question.question_type === "WRITING") {
+    const writtenAnswer = parsed.data.writtenAnswer?.trim();
+    if (!writtenAnswer) return c.json({ error: "記述答案を入力してください。" }, 422);
+    const rubric = await c.env.DB
+      .prepare("SELECT model_answer, required_elements_json, rubric_json FROM writing_rubrics WHERE question_id = ?")
+      .bind(question.id)
+      .first<WritingRubricRow>();
+    if (!rubric) return c.json({ error: "この問題の採点基準を準備中です。" }, 503);
+    const rubricConfig = JSON.parse(rubric.rubric_json) as WritingRubricConfig;
+    const requiredElements: unknown = JSON.parse(rubric.required_elements_json);
+    const score = scoreWritingAnswer(writtenAnswer, rubricConfig);
+    correct = score.passed;
+    writingReview = {
+      score: score.score,
+      charCount: score.charCount,
+      matchedGroups: score.matchedGroups,
+      totalGroups: score.totalGroups,
+      lengthOk: score.lengthOk,
+      modelAnswer: rubric.model_answer,
+      requiredElements: Array.isArray(requiredElements) ? requiredElements.filter((element): element is string => typeof element === "string") : [],
+    };
+  } else {
+    if (!selected) return c.json({ error: "回答を選択してください。" }, 422);
+    correct = selected.is_correct === 1;
+  }
   const history = await c.env.DB
     .prepare("SELECT COALESCE(SUM(is_correct), 0) AS correct, COALESCE(SUM(1 - is_correct), 0) AS incorrect FROM user_answers WHERE user_id = ? AND question_id = ?")
     .bind(auth.user.id, question.id)
@@ -543,9 +774,9 @@ app.post("/api/answers", async (c) => {
     hintUsed: parsed.data.hintUsed,
     priorCorrect: Number(history?.correct ?? 0),
     priorIncorrect: Number(history?.incorrect ?? 0),
-    transferAccuracy: 0.5,
+    transferAccuracy: question.question_type === "TRANSFER" ? (correct ? 1 : 0) : 0.5,
     reverseLectureScore: 0,
-    comparisonAccuracy: 0.5,
+    comparisonAccuracy: ["COMPARISON", "ONE_WORD_DIFF"].includes(question.question_type) ? (correct ? 1 : 0) : 0.5,
   };
   const answerId = crypto.randomUUID();
   const errorCodes = classifyErrorDna(outcome);
@@ -568,7 +799,7 @@ app.post("/api/answers", async (c) => {
         `INSERT INTO user_answers (id, user_id, question_id, selected_choice_id, written_answer, is_correct, elapsed_ms, hint_used, confidence, reasoning_note)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(answerId, auth.user.id, question.id, parsed.data.selectedChoiceId ?? null, parsed.data.writtenAnswer ?? null, correct ? 1 : 0, parsed.data.elapsedMs, parsed.data.hintUsed ? 1 : 0, parsed.data.confidence, parsed.data.reasoningNote ?? null),
+      .bind(answerId, auth.user.id, question.id, question.question_type === "WRITING" ? null : parsed.data.selectedChoiceId ?? null, parsed.data.writtenAnswer?.trim() ?? null, correct ? 1 : 0, parsed.data.elapsedMs, parsed.data.hintUsed ? 1 : 0, parsed.data.confidence, parsed.data.reasoningNote ?? null),
     c.env.DB
       .prepare("INSERT INTO confidence_scores (id, user_answer_id, score, label) VALUES (?, ?, ?, ?)")
       .bind(crypto.randomUUID(), answerId, parsed.data.confidence === "EXPLAIN" ? 3 : parsed.data.confidence === "PROBABLE" ? 2 : 1, parsed.data.confidence),
@@ -582,6 +813,9 @@ app.post("/api/answers", async (c) => {
          last_answer_id = excluded.last_answer_id, updated_at = CURRENT_TIMESTAMP`,
       )
       .bind(crypto.randomUUID(), auth.user.id, question.id, dueAt, intervalDays, correct ? 0.35 : 0.9, errorCodes.includes("HIGH_CONFIDENCE_ERROR") ? 1 : 0.5, errorCodes.includes("CONFUSION") ? 0.9 : 0.25, priority, answerId),
+    c.env.DB
+      .prepare("INSERT INTO learning_events (id, user_id, event_type, duration_seconds, metadata_json) VALUES (?, ?, 'QUESTION_ANSWERED', ?, ?)")
+      .bind(crypto.randomUUID(), auth.user.id, Math.round(parsed.data.elapsedMs / 1000), JSON.stringify({ questionId: question.id, questionType: question.question_type, status: question.status, correct })),
   ];
   for (const code of errorCodes) {
     statements.push(
@@ -591,14 +825,30 @@ app.post("/api/answers", async (c) => {
     );
   }
   await c.env.DB.batch(statements);
+  if (question.status === "VERIFIED") await updateVerifiedMastery(c.env, auth.user.id, question.topic_id);
+  const missionItemType = await completeMissionItem(
+    c.env,
+    auth.user.id,
+    question.question_type === "WRITING"
+      ? ["WRITING"]
+      : question.question_type === "ONE_WORD_DIFF"
+        ? ["ONE_WORD", "REVIEW"]
+        : question.question_type === "TRANSFER"
+          ? ["TRANSFER", "REVIEW"]
+          : ["REVIEW", "HIGH_CONFIDENCE"],
+  );
+  const questionProgress = await getQuestionProgress(c.env, auth.user.id);
   return c.json({
     correct,
     contentStatus: question.status,
     includedInReadiness: question.status === "VERIFIED",
-    explanation: selected?.explanation ?? question.correct_explanation,
+    explanation: question.question_type === "WRITING" || correct ? selected?.explanation ?? question.correct_explanation : `${selected?.explanation ?? ""} ${question.correct_explanation}`.trim(),
+    writingReview,
     reveal: question.reveal_hint,
     judgmentPoint: question.judgment_point,
     errorDna: errorCodes,
+    missionItemType,
+    questionProgress,
     sixR: { recall: true, rate: parsed.data.confidence, reveal: true, repair: !correct, reapplyScheduled: !correct, returnAt: dueAt },
     highConfidenceEmergency: errorCodes.includes("HIGH_CONFIDENCE_ERROR"),
   });
@@ -607,7 +857,16 @@ app.post("/api/answers", async (c) => {
 app.get("/api/progress", async (c) => {
   const user = await requireAuth(c.req.raw, c.env);
   if (!user) return c.json({ error: "認証が必要です。" }, 401);
-  const [answers, dna, mastery, coverage] = await Promise.all([
+  const [practice, verified, summary, dna, mastery, coverage, questionProgress] = await Promise.all([
+    c.env.DB
+      .prepare(
+        `SELECT s.name AS subject, COUNT(*) AS attempts, ROUND(AVG(ua.is_correct) * 100, 1) AS accuracy
+         FROM user_answers ua JOIN questions q ON q.id = ua.question_id
+         JOIN learning_objectives lo ON lo.id = q.learning_objective_id JOIN topics t ON t.id = lo.topic_id
+         JOIN subjects s ON s.id = t.subject_id WHERE ua.user_id = ? AND q.status IN ('REVIEWED', 'VERIFIED') GROUP BY s.id ORDER BY s.content_priority`,
+      )
+      .bind(user.id)
+      .all(),
     c.env.DB
       .prepare(
         `SELECT s.name AS subject, COUNT(*) AS attempts, ROUND(AVG(ua.is_correct) * 100, 1) AS accuracy
@@ -618,6 +877,13 @@ app.get("/api/progress", async (c) => {
       .bind(user.id)
       .all(),
     c.env.DB
+      .prepare(
+        `SELECT COUNT(*) AS attempts, ROUND(COALESCE(AVG(ua.is_correct), 0) * 100, 1) AS accuracy, COALESCE(SUM(ua.elapsed_ms), 0) AS elapsed_ms
+         FROM user_answers ua JOIN questions q ON q.id = ua.question_id WHERE ua.user_id = ? AND q.status IN ('REVIEWED', 'VERIFIED')`,
+      )
+      .bind(user.id)
+      .first<{ attempts: number; accuracy: number; elapsed_ms: number }>(),
+    c.env.DB
       .prepare("SELECT error_code, COUNT(*) AS count FROM error_dna_events WHERE user_id = ? GROUP BY error_code ORDER BY count DESC")
       .bind(user.id)
       .all(),
@@ -625,14 +891,28 @@ app.get("/api/progress", async (c) => {
     c.env.DB
       .prepare(
         `SELECT s.name AS subject, COUNT(DISTINCT lo.id) AS objectives,
-         COUNT(DISTINCT CASE WHEN q.status = 'VERIFIED' THEN q.learning_objective_id END) AS covered
+         COUNT(DISTINCT CASE WHEN q.status IN ('REVIEWED', 'VERIFIED') THEN q.learning_objective_id END) AS reviewed_covered,
+         COUNT(DISTINCT CASE WHEN q.status = 'VERIFIED' THEN q.learning_objective_id END) AS verified_covered
          FROM subjects s JOIN topics t ON t.subject_id = s.id JOIN learning_objectives lo ON lo.topic_id = t.id
          LEFT JOIN questions q ON q.learning_objective_id = lo.id WHERE s.exam_year = ? GROUP BY s.id ORDER BY s.content_priority`,
       )
       .bind(user.examYear)
       .all(),
+    getQuestionProgress(c.env, user.id),
   ]);
-  return c.json({ subjectPerformance: answers.results, errorDna: dna.results, mastery: mastery.results, coverage: coverage.results });
+  return c.json({
+    summary: {
+      practiceAttempts: Number(summary?.attempts ?? 0),
+      practiceAccuracy: Number(summary?.accuracy ?? 0),
+      practiceMinutes: Math.round(Number(summary?.elapsed_ms ?? 0) / 60_000),
+      ...questionProgress,
+    },
+    practicePerformance: practice.results,
+    verifiedPerformance: verified.results,
+    errorDna: dna.results,
+    mastery: mastery.results,
+    coverage: coverage.results,
+  });
 });
 
 app.post("/api/ai/ask", async (c) => {
@@ -649,7 +929,8 @@ app.post("/api/ai/ask", async (c) => {
     )
     .bind(crypto.randomUUID(), auth.user.id, parsed.data.question.normalize("NFKC").toLowerCase(), parsed.data.question, result.answer, result.sourceTier, result.sourceTier === "WORKERS_AI" ? c.env.AI_MODEL : null, result.estimatedNeurons, result.cached ? 1 : 0)
     .run();
-  return c.json(result);
+  const missionItemType = await completeMissionItem(c.env, auth.user.id, ["REVERSE_LECTURE"]);
+  return c.json({ ...result, missionItemType });
 });
 
 app.get("/api/mock-exams", async (c) => {

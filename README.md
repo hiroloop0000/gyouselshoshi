@@ -214,9 +214,36 @@ GitHub Actions deployにはRepository/Environment Secretsを設定します。
 - [ ] PWA install/offline fallbackとmobile実機を確認
 - [ ] 料金planを明示的に確認し、無断でPaidへ変更しない
 
+## 4,000問の法令学習バンク
+
+`scripts/build-question-bank.mjs` は、e-Gov法令API v2から2026年4月1日時点の17法令を取得し、条文に基づく独自問題を再現生成します。行政書士試験研究センターの過去問本文は転載しません。
+
+```bash
+npm run bank:build
+npm run bank:validate
+```
+
+生成後のREVIEWED問題は既存の人手作成24問を含めて次の4,000問です。
+
+| 科目 | 問題数 |
+| --- | ---: |
+| 行政法 | 1,400 |
+| 民法 | 900 |
+| 憲法 | 350 |
+| 基礎知識 | 800 |
+| 商法・会社法 | 350 |
+| 基礎法学 | 200 |
+
+問題形式は、条項から本文を選ぶ問題、本文から条項を選ぶ問題、本文から法令名を選ぶ問題、重要語句の一語差問題です。単なる選択肢の並べ替えは別問題として数えません。
+
+検証スクリプトは、空DBへの全マイグレーション適用に加え、科目別件数、5肢、正解1つ、選択肢重複、問題文・指紋重複、出典、基準日、e-Gov改正IDを検査します。生成問題は最終法務確認前の `REVIEWED` に固定し、到達度・診断・模試に利用できる `VERIFIED` へ自動昇格させません。
+
+再生成時はマイグレーション差分と法令改正IDをレビューしてから本番へ適用してください。
+
 ## 公式情報とCloudflare仕様
 
 - [令和8年度行政書士試験のご案内](https://www.gyosei-shiken.or.jp/doc/guide/guide.html)
+- [e-Gov法令API v2](https://laws.e-gov.go.jp/api/2/redoc/)
 - [行政書士試験研究センター 著作権について](https://www.gyosei-shiken.or.jp/doc/about/copyright.html)
 - [Cloudflare Workers Limits](https://developers.cloudflare.com/workers/platform/limits/)
 - [Cloudflare D1 Pricing](https://developers.cloudflare.com/d1/platform/pricing/)

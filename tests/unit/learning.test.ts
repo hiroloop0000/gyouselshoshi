@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildMission,
   calculateMastery,
+  calculateQuestionProgress,
   calculateReadiness,
   calculateReviewPriority,
   canActivateUser,
   classifyErrorDna,
   getAiGuardState,
   nextReviewIntervalDays,
+  scoreWritingAnswer,
   validateInvitationSnapshot,
 } from "../../src/shared/learning";
 
@@ -92,6 +94,28 @@ describe("mastery and readiness", () => {
   });
 });
 
+describe("40-character writing scorer", () => {
+  const rubric = {
+    groups: [["拒否処分", "拒否"], ["同時"], ["理由"], ["示さ", "提示"]],
+    minimumRatio: 0.7,
+    minLength: 20,
+    maxLength: 60,
+  };
+
+  it("passes an answer that contains the required legal elements in range", () => {
+    const result = scoreWritingAnswer("行政庁は拒否処分と同時に、その理由を申請者へ提示しなければならない。", rubric);
+    expect(result.passed).toBe(true);
+    expect(result.score).toBe(100);
+    expect(result.lengthOk).toBe(true);
+  });
+
+  it("rejects an answer that is too short even when it contains keywords", () => {
+    const result = scoreWritingAnswer("拒否と同時に理由提示", rubric);
+    expect(result.passed).toBe(false);
+    expect(result.lengthOk).toBe(false);
+  });
+});
+
 describe("invitation and user limits", () => {
   it("accepts only active, unexpired invitations with uses left", () => {
     const now = new Date("2026-08-18T00:00:00Z");
@@ -119,5 +143,16 @@ describe("AI cost guard and mission", () => {
     expect(mission.comebackMode).toBe(true);
     expect(mission.estimatedMinutes).toBeLessThanOrEqual(8);
     expect(mission.items.length).toBeGreaterThan(0);
+  });
+
+  it("reports unique question-bank completion without exceeding the total", () => {
+    expect(calculateQuestionProgress(4010, 123)).toEqual({
+      totalQuestions: 4010,
+      answeredQuestions: 123,
+      remainingQuestions: 3887,
+      completionRate: 3.1,
+    });
+    expect(calculateQuestionProgress(10, 14)).toMatchObject({ answeredQuestions: 10, remainingQuestions: 0, completionRate: 100 });
+    expect(calculateQuestionProgress(0, 0).completionRate).toBe(0);
   });
 });
