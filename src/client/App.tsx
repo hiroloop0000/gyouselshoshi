@@ -70,8 +70,55 @@ interface DashboardData {
     evidenceLevel: string;
     metrics: Record<string, number>;
   };
-  study: { verifiedAttempts: number; accuracy: number; minutes: number; highConfidenceErrors: number };
+  study: {
+    practiceAttempts: number;
+    practiceAccuracy: number;
+    practiceMinutes: number;
+    highConfidenceErrors: number;
+    verifiedAttempts: number;
+    verifiedAccuracy: number;
+  };
   content: Record<string, number>;
+}
+
+interface LectureRecord {
+  id: string;
+  title: string;
+  explanation: string;
+  key_points_json: string;
+  common_mistakes_json: string;
+  related_law_json: string;
+  estimated_minutes: number;
+  status: string;
+  subject_name: string;
+  topic_name: string;
+}
+
+interface WritingReview {
+  score: number;
+  charCount: number;
+  matchedGroups: number;
+  totalGroups: number;
+  lengthOk: boolean;
+  modelAnswer: string;
+  requiredElements: string[];
+}
+
+interface ProgressData {
+  summary: { practiceAttempts: number; practiceAccuracy: number; practiceMinutes: number };
+  practicePerformance: Array<Record<string, unknown>>;
+  verifiedPerformance: Array<Record<string, unknown>>;
+  errorDna: Array<Record<string, unknown>>;
+  coverage: Array<Record<string, unknown>>;
+}
+
+function parseJsonArray<T>(value: string): T[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as T[] : [];
+  } catch {
+    return [];
+  }
 }
 
 type RegistrationMode = "OPEN" | "INVITE_ONLY";
@@ -539,12 +586,12 @@ function DashboardPage() {
       <section className="dashboard-grid">
         <article className="mission-card">
           <div className="card-head"><div><span className="card-kicker">TODAY'S MISSION</span><h2>今日の合格ミッション</h2><p><Clock3 size={15} /> 約{data.mission.estimatedMinutes}分</p></div><div className="progress-circle" style={{ "--progress": `${data.mission.items.length ? (missionDone / data.mission.items.length) * 360 : 0}deg` } as React.CSSProperties}><div><strong>{missionDone}</strong><span>/ {data.mission.items.length}</span></div></div></div>
-          <div className="mission-items">{data.mission.items.map((item, index) => <Link to={item.item_type === "LECTURE" ? "/app/learn" : item.item_type === "REVERSE_LECTURE" ? "/app/teacher" : "/app/questions"} key={item.id}><span className={item.status === "DONE" ? "done" : ""}>{item.status === "DONE" ? <Check size={15} /> : index + 1}</span><div><strong>{item.title}</strong><small>{item.item_type.replaceAll("_", " ")}</small></div><em>{item.estimated_minutes}分</em><ChevronRight size={17} /></Link>)}</div>
+          <div className="mission-items">{data.mission.items.map((item, index) => <Link to={item.item_type === "LECTURE" ? "/app/learn" : item.item_type === "REVERSE_LECTURE" ? "/app/teacher" : item.item_type === "WRITING" ? "/app/questions?type=WRITING" : item.item_type === "ONE_WORD" ? "/app/questions?type=ONE_WORD_DIFF" : item.item_type === "TRANSFER" ? "/app/questions?type=TRANSFER" : "/app/questions"} key={item.id}><span className={item.status === "DONE" ? "done" : ""}>{item.status === "DONE" ? <Check size={15} /> : index + 1}</span><div><strong>{item.title}</strong><small>{item.item_type.replaceAll("_", " ")}</small></div><em>{item.estimated_minutes}分</em><ChevronRight size={17} /></Link>)}</div>
           <Link className="button button-primary full" to="/app/questions">ミッションを始める <ArrowRight size={18} /></Link>
         </article>
         <div className="dashboard-side">
           <article className="readiness-card"><div className="card-head compact"><div><span className="card-kicker">READINESS</span><h3>合格到達度</h3></div><small>{data.readiness.evidenceLevel}</small></div><div className="readiness-score"><strong>{data.readiness.score}</strong><span>%</span><div><i style={{ width: `${data.readiness.score}%` }} /></div></div><p>合格確率ではなく、確認済み学習実績から算出する到達指標です。</p><Link to="/app/progress">内訳を見る <ArrowRight size={15} /></Link></article>
-          <div className="mini-stat-grid"><article><div className="stat-icon teal"><Target /></div><span>正答率</span><strong>{data.study.accuracy}%</strong><small>VERIFIEDのみ</small></article><article><div className="stat-icon amber"><Clock3 /></div><span>学習時間</span><strong>{data.study.minutes}<small>分</small></strong><small>累計</small></article></div>
+          <div className="mini-stat-grid"><article><div className="stat-icon teal"><Target /></div><span>練習正答率</span><strong>{data.study.practiceAccuracy}%</strong><small>{data.study.practiceAttempts}問を反映</small></article><article><div className="stat-icon amber"><Clock3 /></div><span>練習時間</span><strong>{data.study.practiceMinutes}<small>分</small></strong><small>REVIEWED以上</small></article></div>
           <article className="forecast-card"><div><span className="card-kicker">FORGETTING FORECAST</span><h3>忘却予報</h3></div><div className="forecast-row"><span className="forecast-orb"><RefreshCw /></span><p><strong>{Math.max(0, data.mission.items.filter((item) => item.item_type === "REVIEW").length)}セット</strong><small>今日の復習対象</small></p><Link to="/app/questions"><ChevronRight /></Link></div></article>
           <article className="alert-card"><AlertTriangle /><div><span>高確信誤答</span><strong>{data.study.highConfidenceErrors}件</strong><p>確信して間違えたルールを優先修正</p></div><Link to="/app/questions"><ArrowRight /></Link></article>
         </div>
@@ -555,19 +602,101 @@ function DashboardPage() {
 }
 
 function LearnPage() {
-  const { user } = useAuth(); const [lectures, setLectures] = useState<Array<Record<string, unknown>>>([]); const [error, setError] = useState(""); const [showDraft, setShowDraft] = useState(false);
-  useEffect(() => { api<{ lectures: Array<Record<string, unknown>> }>(`/api/lectures${showDraft ? "?includeDraft=true" : ""}`).then((result) => setLectures(result.lectures)).catch((cause) => setError(cause instanceof Error ? cause.message : "読込失敗")); }, [showDraft]);
-  return <><PageIntro eyebrow="LEARNING LIBRARY" title="ミニ講義" description="5〜10分で一論点。誤答の修復に必要な講義を優先します。" action={user?.role === "ADMIN" && <label className="toggle-label"><input type="checkbox" checked={showDraft} onChange={(e) => setShowDraft(e.target.checked)} />DRAFTを表示</label>} />{error && <div className="form-error">{error}</div>}{lectures.length === 0 ? <EmptyState icon={<Library />} title="VERIFIED講義を準備中です" text="管理者レビューが完了した講義から公開されます。" /> : <div className="lecture-grid">{lectures.map((lecture) => <article key={String(lecture.id)}><div className="lecture-meta"><span>{String(lecture.subject_name)}</span><em className={`badge ${String(lecture.status).toLowerCase()}`}>{String(lecture.status)}</em></div><h2>{String(lecture.title)}</h2><p>{String(lecture.explanation)}</p><div><Clock3 size={15} />{String(lecture.estimated_minutes)}分</div><button className="button button-ghost">講義を読む <ArrowRight size={16} /></button></article>)}</div>}</>;
+  const { user } = useAuth();
+  const [lectures, setLectures] = useState<LectureRecord[]>([]);
+  const [selected, setSelected] = useState<LectureRecord | null>(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [showDraft, setShowDraft] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  useEffect(() => {
+    api<{ lectures: LectureRecord[] }>(`/api/lectures${showDraft ? "?includeDraft=true" : ""}`)
+      .then((result) => setLectures(result.lectures))
+      .catch((cause) => setError(cause instanceof Error ? cause.message : "読込失敗"));
+  }, [showDraft]);
+  const complete = async () => {
+    if (!selected) return;
+    setCompleting(true);
+    setNotice("");
+    try {
+      await api(`/api/lectures/${selected.id}/complete`, { method: "POST" });
+      setNotice("講義完了を記録し、今日のミッションへ反映しました。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "完了を記録できませんでした。");
+    } finally {
+      setCompleting(false);
+    }
+  };
+  const sources = selected ? parseJsonArray<{ law: string; articles: string; referenceDate: string; url: string }>(selected.related_law_json) : [];
+  return <>
+    <PageIntro eyebrow="LEARNING LIBRARY" title="ミニ講義" description="32の必須学習目標を、5〜10分の根拠付き講義で学びます。" action={user?.role === "ADMIN" && <label className="toggle-label"><input type="checkbox" checked={showDraft} onChange={(event) => setShowDraft(event.target.checked)} />DRAFTを表示</label>} />
+    {error && <div className="form-error">{error}</div>}
+    {selected && <section className="lecture-reader">
+      <div className="lecture-reader-head"><div><span>{selected.subject_name} · {selected.topic_name}</span><h2>{selected.title}</h2></div><button aria-label="講義を閉じる" onClick={() => setSelected(null)}><X /></button></div>
+      {selected.status !== "VERIFIED" && <div className="draft-warning"><AlertTriangle size={18} />出典と内容を照合したREVIEWED講義です。最終確認前のため合格到達度の根拠には使いません。</div>}
+      <p className="lecture-body">{selected.explanation}</p>
+      <div className="lecture-columns">
+        <div><h3>押さえるポイント</h3><ul>{parseJsonArray<string>(selected.key_points_json).map((point) => <li key={point}>{point}</li>)}</ul></div>
+        <div><h3>よくある間違い</h3><ul>{parseJsonArray<string>(selected.common_mistakes_json).map((mistake) => <li key={mistake}>{mistake}</li>)}</ul></div>
+      </div>
+      <div className="lecture-sources"><strong>根拠法令（2026年4月1日基準）</strong>{sources.map((source) => <a key={`${source.law}-${source.articles}`} href={source.url} target="_blank" rel="noreferrer">{source.law} {source.articles}<ArrowRight size={14} /></a>)}</div>
+      {notice && <div className="completion-notice"><CheckCircle2 />{notice}</div>}
+      <button className="button button-primary" disabled={completing} onClick={() => void complete()}>{completing ? "記録中…" : "この講義を完了する"}</button>
+    </section>}
+    {lectures.length === 0 ? <EmptyState icon={<Library />} title="講義を準備中です" text="レビュー済み講義が公開されると、ここから学べます。" /> : <div className="lecture-grid">{lectures.map((lecture) => <article key={lecture.id}><div className="lecture-meta"><span>{lecture.subject_name}</span><em className={`badge ${lecture.status.toLowerCase()}`}>{lecture.status}</em></div><h2>{lecture.title}</h2><p>{lecture.explanation}</p><div><Clock3 size={15} />{lecture.estimated_minutes}分</div><button className="button button-ghost" onClick={() => { setSelected(lecture); setNotice(""); window.scrollTo({ top: 0, behavior: "smooth" }); }}>講義を読む <ArrowRight size={16} /></button></article>)}</div>}
+  </>;
 }
 
 function QuestionsPage() {
   const { user } = useAuth();
-  const [question, setQuestion] = useState<Record<string, unknown> | null>(null); const [choice, setChoice] = useState(""); const [confidence, setConfidence] = useState<"EXPLAIN" | "PROBABLE" | "GUESS">("PROBABLE"); const [result, setResult] = useState<Record<string, unknown> | null>(null); const [message, setMessage] = useState(""); const [startedAt, setStartedAt] = useState(() => Date.now()); const [preview, setPreview] = useState(false);
-  const load = useCallback(async () => { setResult(null); setChoice(""); setMessage(""); setStartedAt(Date.now()); try { const value = await api<{ question: Record<string, unknown> }>(`/api/questions/next${preview ? "?preview=true" : ""}`); setQuestion(value.question); } catch (cause) { setQuestion(null); setMessage(cause instanceof Error ? cause.message : "問題を取得できませんでした。"); } }, [preview]);
+  const location = useLocation();
+  const requestedType = new URLSearchParams(location.search).get("type");
+  const [question, setQuestion] = useState<Record<string, unknown> | null>(null);
+  const [choice, setChoice] = useState("");
+  const [writtenAnswer, setWrittenAnswer] = useState("");
+  const [confidence, setConfidence] = useState<"EXPLAIN" | "PROBABLE" | "GUESS">("PROBABLE");
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [message, setMessage] = useState("");
+  const [startedAt, setStartedAt] = useState(() => Date.now());
+  const [preview, setPreview] = useState(false);
+  const load = useCallback(async () => {
+    setResult(null); setChoice(""); setWrittenAnswer(""); setMessage(""); setStartedAt(Date.now());
+    const params = new URLSearchParams();
+    if (preview) params.set("preview", "true");
+    if (requestedType) params.set("type", requestedType);
+    try {
+      const value = await api<{ question: Record<string, unknown> }>(`/api/questions/next${params.size ? `?${params}` : ""}`);
+      setQuestion(value.question);
+    } catch (cause) {
+      setQuestion(null);
+      setMessage(cause instanceof Error ? cause.message : "問題を取得できませんでした。");
+    }
+  }, [preview, requestedType]);
   useEffect(() => { const timer = window.setTimeout(() => void load(), 0); return () => window.clearTimeout(timer); }, [load]);
-  const submit = async () => { if (!question || !choice) return; try { const value = await api<Record<string, unknown>>("/api/answers", { method: "POST", body: JSON.stringify({ questionId: question.id, selectedChoiceId: choice, confidence, elapsedMs: Date.now() - startedAt, hintUsed: false }) }); setResult(value); } catch (cause) { setMessage(cause instanceof Error ? cause.message : "回答を保存できませんでした。"); } };
+  const isWriting = question?.question_type === "WRITING";
+  const submit = async () => {
+    if (!question || (isWriting ? writtenAnswer.trim().length === 0 : !choice)) return;
+    try {
+      const value = await api<Record<string, unknown>>("/api/answers", { method: "POST", body: JSON.stringify({ questionId: question.id, selectedChoiceId: isWriting ? undefined : choice, writtenAnswer: isWriting ? writtenAnswer : undefined, confidence, elapsedMs: Date.now() - startedAt, hintUsed: false }) });
+      setResult(value);
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "回答を保存できませんでした。");
+    }
+  };
   const choices = (question?.choices as Array<{ id: string; body: string; choice_order: number }> | undefined) ?? [];
-  return <><PageIntro eyebrow="PRACTICE" title="問題演習" description="根拠照合済みの練習問題で、まず思い出し、確信度を決めてから答えます。" action={user?.role === "ADMIN" && <label className="toggle-label"><input type="checkbox" checked={preview} onChange={(e) => setPreview(e.target.checked)} />DRAFTプレビュー</label>} />{!question ? <EmptyState icon={<FilePenLine />} title="問題を準備中です" text={message || "レビュー済みの練習問題が公開されると、ここから学習できます。"} action={user?.role === "ADMIN" ? <button className="button button-ghost" onClick={() => setPreview(true)}>DRAFTを確認</button> : undefined} /> : <section className="question-card"><div className="question-meta"><span>{String(question.subject_name)} · {String(question.topic_name)}</span><span className={`badge ${String(question.status).toLowerCase()}`}>{String(question.status)}</span><em>{String(question.difficulty)}</em></div><h2>{String(question.stem)}</h2>{question.status === "REVIEWED" && <div className="draft-warning"><AlertTriangle size={18} />内容・根拠を照合した練習問題です。最終確認前のため、到達度・診断・模試には算入されません。</div>}{question.status === "DRAFT" && <div className="draft-warning"><AlertTriangle size={18} />この問題は確認前のDRAFTです。管理者プレビュー専用で、到達度・診断・模試には算入されません。</div>}<div className="choices">{choices.map((item) => <label key={item.id} className={choice === item.id ? "selected" : ""}><input type="radio" name="choice" value={item.id} checked={choice === item.id} onChange={() => setChoice(item.id)} /><span>{item.choice_order}</span><p>{item.body}</p></label>)}</div>{!result && <><div className="confidence-block"><strong>この答えへの確信度</strong><div>{[["EXPLAIN", "根拠まで説明できる"], ["PROBABLE", "たぶん正しい"], ["GUESS", "勘・消去法"]].map(([value, label]) => <button key={value} className={confidence === value ? "selected" : ""} onClick={() => setConfidence(value as typeof confidence)}>{label}</button>)}</div></div><button className="button button-primary full" disabled={!choice} onClick={() => void submit()}>回答を確定する</button></>}{result && <div className={result.correct ? "answer-result correct" : "answer-result incorrect"}><div className="result-title">{result.correct ? <CheckCircle2 /> : <AlertTriangle />}<h3>{result.correct ? "正解" : "もう一度、判断の分岐を確認"}</h3></div><p>{String(result.explanation)}</p>{Boolean(result.judgmentPoint) && <div className="judgment-point"><strong>今回の判断ポイント</strong><p>{String(result.judgmentPoint)}</p></div>}{Boolean(result.highConfidenceEmergency) && <div className="emergency"><AlertTriangle /><div><strong>高確信誤答救急室へ</strong><p>あなたが採用した判断ルールを保存し、比較・変形問題・翌日再テストへつなげました。</p></div></div>}<div className="result-actions"><button className="button button-ghost" onClick={() => void load()}>次の問題へ</button><Link className="button button-primary" to="/app/learn">関連講義で修復</Link></div></div>}</section>}</>;
+  const writingReview = result?.writingReview as WritingReview | null | undefined;
+  return <>
+    <PageIntro eyebrow="PRACTICE" title={requestedType === "WRITING" ? "40字記述" : "問題演習"} description="回答はすぐ練習成績へ反映。VERIFIED問題だけを合格到達度・診断・模試に使います。" action={user?.role === "ADMIN" && <label className="toggle-label"><input type="checkbox" checked={preview} onChange={(event) => setPreview(event.target.checked)} />DRAFTプレビュー</label>} />
+    {!question ? <EmptyState icon={<FilePenLine />} title="問題を準備中です" text={message || "レビュー済みの練習問題が公開されると、ここから学習できます。"} action={user?.role === "ADMIN" ? <button className="button button-ghost" onClick={() => setPreview(true)}>DRAFTを確認</button> : undefined} /> : <section className="question-card">
+      <div className="question-meta"><span>{String(question.subject_name)} · {String(question.topic_name)}</span><span className={`badge ${String(question.status).toLowerCase()}`}>{String(question.status)}</span><em>{String(question.difficulty)}</em></div>
+      <h2>{String(question.stem)}</h2>
+      {question.status === "REVIEWED" && <div className="draft-warning"><AlertTriangle size={18} />練習成績には反映されます。最終確認前のため、合格到達度・診断・模試には算入されません。</div>}
+      {question.status === "DRAFT" && <div className="draft-warning"><AlertTriangle size={18} />管理者プレビュー専用です。成績・到達度・診断・模試には算入されません。</div>}
+      {isWriting ? <div className="writing-answer"><label htmlFor="writing-answer">40字程度で答案を入力</label><textarea id="writing-answer" value={writtenAnswer} onChange={(event) => setWrittenAnswer(event.target.value)} maxLength={80} placeholder="主体・要件・効果を意識して記述してください" /><span className={writtenAnswer.length >= 20 && writtenAnswer.length <= 60 ? "in-range" : ""}>{[...writtenAnswer].length}字 / 目安20〜60字</span></div> : <div className="choices">{choices.map((item) => <label key={item.id} className={choice === item.id ? "selected" : ""}><input type="radio" name="choice" value={item.id} checked={choice === item.id} onChange={() => setChoice(item.id)} /><span>{item.choice_order}</span><p>{item.body}</p></label>)}</div>}
+      {!result && <><div className="confidence-block"><strong>この答えへの確信度</strong><div>{[["EXPLAIN", "根拠まで説明できる"], ["PROBABLE", "たぶん正しい"], ["GUESS", "勘・消去法"]].map(([value, label]) => <button key={value} className={confidence === value ? "selected" : ""} onClick={() => setConfidence(value as typeof confidence)}>{label}</button>)}</div></div><button className="button button-primary full" disabled={isWriting ? writtenAnswer.trim().length === 0 : !choice} onClick={() => void submit()}>回答を確定する</button></>}
+      {result && <div className={result.correct ? "answer-result correct" : "answer-result incorrect"}><div className="result-title">{result.correct ? <CheckCircle2 /> : <AlertTriangle />}<h3>{result.correct ? (isWriting ? "採点基準を満たしました" : "正解") : (isWriting ? "必要な法的要素を補強しましょう" : "もう一度、判断の分岐を確認")}</h3></div><div className="score-scope"><CheckCircle2 />練習成績へ反映済み{!result.includedInReadiness && "（合格到達度とは分離）"}</div>{writingReview && <div className="writing-review"><strong>要素得点 {writingReview.score}%</strong><span>{writingReview.matchedGroups} / {writingReview.totalGroups} 要素 · {writingReview.charCount}字</span><p><b>模範解答</b>{writingReview.modelAnswer}</p><p><b>必要要素</b>{writingReview.requiredElements.join("・")}</p></div>}<p>{String(result.explanation)}</p>{Boolean(result.judgmentPoint) && <div className="judgment-point"><strong>今回の判断ポイント</strong><p>{String(result.judgmentPoint)}</p></div>}{Boolean(result.highConfidenceEmergency) && <div className="emergency"><AlertTriangle /><div><strong>高確信誤答救急室へ</strong><p>採用した判断ルールを保存し、比較・変形問題・翌日再テストへつなげました。</p></div></div>}<div className="result-actions"><button className="button button-ghost" onClick={() => void load()}>次の問題へ</button><Link className="button button-primary" to="/app/learn">関連講義で修復</Link></div></div>}
+    </section>}
+  </>;
 }
 
 function TeacherPage() {
@@ -577,9 +706,20 @@ function TeacherPage() {
 }
 
 function ProgressPage() {
-  const [data, setData] = useState<{ subjectPerformance: Array<Record<string, unknown>>; errorDna: Array<Record<string, unknown>>; coverage: Array<Record<string, unknown>> } | null>(null);
-  useEffect(() => { api<typeof data>("/api/progress").then(setData).catch(() => undefined); }, []);
-  return <><PageIntro eyebrow="LEARNING ANALYTICS" title="成績・到達度" description="確認済み回答だけで、再現できる知識を多面的に追います。" />{!data ? <PageSkeleton /> : <div className="progress-layout"><section className="analytics-card"><h2>科目別パフォーマンス</h2>{data.subjectPerformance.length === 0 ? <p className="muted">VERIFIED問題の回答データがまだありません。</p> : <div className="performance-list">{data.subjectPerformance.map((item) => <div key={String(item.subject)}><span>{String(item.subject)}</span><i><b style={{ width: `${String(item.accuracy)}%` }} /></i><strong>{String(item.accuracy)}%</strong></div>)}</div>}</section><section className="analytics-card"><h2>誤答DNA</h2>{data.errorDna.length === 0 ? <p className="muted">誤答原因の記録はまだありません。</p> : <div className="dna-tags">{data.errorDna.map((item) => <span key={String(item.error_code)}>{String(item.error_code)}<strong>{String(item.count)}</strong></span>)}</div>}</section><section className="analytics-card wide"><h2>論点カバレッジ</h2><p>主要論点の95%以上をVERIFIED教材で覆うことが目標です。</p><div className="coverage-grid">{data.coverage.map((item) => { const total = Number(item.objectives); const covered = Number(item.covered); const rate = total ? Math.round((covered / total) * 100) : 0; return <div key={String(item.subject)}><strong>{String(item.subject)}</strong><span>{covered} / {total} 論点</span><i><b style={{ width: `${rate}%` }} /></i><em>{rate}%</em></div>; })}</div></section></div>}</>;
+  const [data, setData] = useState<ProgressData | null>(null);
+  useEffect(() => { api<ProgressData>("/api/progress").then(setData).catch(() => undefined); }, []);
+  return <>
+    <PageIntro eyebrow="LEARNING ANALYTICS" title="成績・到達度" description="日々の練習成績と、最終確認済み問題による合格到達度を分けて表示します。" />
+    {!data ? <PageSkeleton /> : <>
+      <div className="practice-summary"><article><span>解答数</span><strong>{data.summary.practiceAttempts}<small>問</small></strong></article><article><span>練習正答率</span><strong>{data.summary.practiceAccuracy}<small>%</small></strong></article><article><span>練習時間</span><strong>{data.summary.practiceMinutes}<small>分</small></strong></article></div>
+      <div className="progress-layout">
+        <section className="analytics-card"><h2>科目別・練習成績</h2>{data.practicePerformance.length === 0 ? <p className="muted">問題に回答すると、ここへすぐ反映されます。</p> : <div className="performance-list">{data.practicePerformance.map((item) => <div key={String(item.subject)}><span>{String(item.subject)}</span><i><b style={{ width: `${String(item.accuracy)}%` }} /></i><strong>{String(item.accuracy)}%</strong></div>)}</div>}<p className="scope-note">REVIEWED・VERIFIED問題を集計</p></section>
+        <section className="analytics-card"><h2>合格到達度の確認データ</h2>{data.verifiedPerformance.length === 0 ? <p className="muted">VERIFIED問題の回答はまだありません。練習成績は左側に記録されています。</p> : <div className="performance-list">{data.verifiedPerformance.map((item) => <div key={String(item.subject)}><span>{String(item.subject)}</span><i><b style={{ width: `${String(item.accuracy)}%` }} /></i><strong>{String(item.accuracy)}%</strong></div>)}</div>}<p className="scope-note">模試・診断・合格到達度はVERIFIEDのみ</p></section>
+        <section className="analytics-card wide"><h2>誤答DNA</h2>{data.errorDna.length === 0 ? <p className="muted">誤答原因の記録はまだありません。</p> : <div className="dna-tags">{data.errorDna.map((item) => <span key={String(item.error_code)}>{String(item.error_code)}<strong>{String(item.count)}</strong></span>)}</div>}</section>
+        <section className="analytics-card wide"><h2>論点カバレッジ</h2><p>練習可能な論点と、最終確認済みの到達度対象を区別しています。</p><div className="coverage-grid">{data.coverage.map((item) => { const total = Number(item.objectives); const reviewed = Number(item.reviewed_covered); const verified = Number(item.verified_covered); const rate = total ? Math.round((reviewed / total) * 100) : 0; return <div key={String(item.subject)}><strong>{String(item.subject)}</strong><span>練習 {reviewed} / {total} · VERIFIED {verified}</span><i><b style={{ width: `${rate}%` }} /></i><em>{rate}%</em></div>; })}</div></section>
+      </div>
+    </>}
+  </>;
 }
 
 function MockPage() {

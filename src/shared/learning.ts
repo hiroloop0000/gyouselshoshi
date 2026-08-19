@@ -80,6 +80,41 @@ export interface MasteryEvidence {
   verifiedAttempts: number;
 }
 
+export interface WritingRubricConfig {
+  groups: string[][];
+  minimumRatio: number;
+  minLength: number;
+  maxLength: number;
+}
+
+export interface WritingScore {
+  score: number;
+  charCount: number;
+  matchedGroups: number;
+  totalGroups: number;
+  lengthOk: boolean;
+  passed: boolean;
+}
+
+const normalizeWritingText = (value: string): string => value.normalize("NFKC").replace(/\s+/g, "").toLowerCase();
+
+export function scoreWritingAnswer(answer: string, rubric: WritingRubricConfig): WritingScore {
+  const normalized = normalizeWritingText(answer);
+  const charCount = [...answer.trim()].length;
+  const groups = rubric.groups.filter((group) => group.length > 0);
+  const matchedGroups = groups.filter((group) => group.some((term) => normalized.includes(normalizeWritingText(term)))).length;
+  const ratio = groups.length === 0 ? 0 : matchedGroups / groups.length;
+  const lengthOk = charCount >= rubric.minLength && charCount <= rubric.maxLength;
+  return {
+    score: Math.round(ratio * 100),
+    charCount,
+    matchedGroups,
+    totalGroups: groups.length,
+    lengthOk,
+    passed: lengthOk && ratio >= rubric.minimumRatio,
+  };
+}
+
 export function calculateMastery(evidence: MasteryEvidence): MasteryMetrics {
   const reliability = clamp(evidence.verifiedAttempts / 12);
   const conservative = (value: number): number => Math.round(clamp(value) * reliability * 100);

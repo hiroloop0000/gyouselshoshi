@@ -8,6 +8,7 @@ import {
   classifyErrorDna,
   getAiGuardState,
   nextReviewIntervalDays,
+  scoreWritingAnswer,
   validateInvitationSnapshot,
 } from "../../src/shared/learning";
 
@@ -89,6 +90,28 @@ describe("mastery and readiness", () => {
       verifiedAttempts: 12,
     });
     expect(calculateReadiness(metrics)).toBe(100);
+  });
+});
+
+describe("40-character writing scorer", () => {
+  const rubric = {
+    groups: [["拒否処分", "拒否"], ["同時"], ["理由"], ["示さ", "提示"]],
+    minimumRatio: 0.7,
+    minLength: 20,
+    maxLength: 60,
+  };
+
+  it("passes an answer that contains the required legal elements in range", () => {
+    const result = scoreWritingAnswer("行政庁は拒否処分と同時に、その理由を申請者へ提示しなければならない。", rubric);
+    expect(result.passed).toBe(true);
+    expect(result.score).toBe(100);
+    expect(result.lengthOk).toBe(true);
+  });
+
+  it("rejects an answer that is too short even when it contains keywords", () => {
+    const result = scoreWritingAnswer("拒否と同時に理由提示", rubric);
+    expect(result.passed).toBe(false);
+    expect(result.lengthOk).toBe(false);
   });
 });
 

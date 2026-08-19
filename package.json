@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "bank:build": "node scripts/build-question-bank.mjs",
+    "content:build": "node scripts/build-learning-content.mjs",
     "bank:validate": "node scripts/validate-question-bank.mjs",
     "cf:types": "wrangler types",
     "db:migrate:local": "wrangler d1 migrations apply gyosei-pass-db --local",
